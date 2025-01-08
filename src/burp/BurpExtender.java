@@ -269,7 +269,7 @@ public class BurpExtender implements IBurpExtender, IScannerCheck, ITab, IContex
     //
 
 
-    private String buildIssueForReflection(Map param) {
+    private String buildIssueForReflection(Map param, IHttpRequestResponse baseRequestResponse) {
         int type;
         Object typeObj = param.get(TYPE);
         
@@ -287,13 +287,39 @@ public class BurpExtender implements IBurpExtender, IScannerCheck, ITab, IContex
         String vulnerableChars = param.containsKey(VULNERABLE) ? (String)param.get(VULNERABLE) : "";
         
         StringBuilder result = new StringBuilder("<li>");
-        result.append(String.format("%s '%s' - reflected %d times",
+        
+        // Extract all special characters from the findings
+        Set<String> allChars = new HashSet<>();
+        if (!vulnerableChars.isEmpty()) {
+            for (String context : vulnerableChars.split(" \\| ")) {
+                if (context.contains("(found: ")) {
+                    String chars = context.substring(context.indexOf("found: ") + 7, context.indexOf(")"));
+                    for (String c : chars.split(" ")) {
+                        allChars.add(c);
+                    }
+                } else if (context.contains("breaks out with ")) {
+                    String c = context.substring(context.indexOf("breaks out with ") + 14).replaceAll("[)]", "");
+                    allChars.add(c);
+                }
+            }
+        }
+        
+        // Get the URL from the base request
+        String url = helpers.analyzeRequest(baseRequestResponse).getUrl().toString();
+        
+        // Build the output line
+        result.append(String.format("%s '%s' - [%s] - %s - %s=%s - reflected %d times",
             parameterType,
             paramName,
+            String.join("", new TreeSet<>(allChars)),  // Sort the characters for consistent output
+            url,
+            paramName,
+            param.get(VALUE),
             matches.size()));
         
         if (!vulnerableChars.isEmpty()) {
-            result.append(" and allow the following characters: ").append(vulnerableChars);
+            result.append(" and allow the following characters:<br>");
+            result.append(vulnerableChars.replace(" | ", "<br>"));
             
             // Context checking logic
             if (settings.getCheckContext() && !vulnerableChars.contains(CONTEXT_VULN_FLAG)) {
@@ -378,16 +404,16 @@ public class BurpExtender implements IBurpExtender, IScannerCheck, ITab, IContex
                 for(Map param: reflections) {
 
                     if(param.get(REFLECTED_IN).equals(BODY)){
-                        reflectedInBody+=buildIssueForReflection(param);
+                        reflectedInBody+=buildIssueForReflection(param, baseRequestResponse);
                     }
 
                     if(param.get(REFLECTED_IN).equals(HEADERS)){
-                        reflectedInHeader+=buildIssueForReflection(param);
+                        reflectedInHeader+=buildIssueForReflection(param, baseRequestResponse);
                     }
 
 
                     if(param.get(REFLECTED_IN).equals(BOTH)){
-                        reflectedInAll+=buildIssueForReflection(param);
+                        reflectedInAll+=buildIssueForReflection(param, baseRequestResponse);
                     }
 
 

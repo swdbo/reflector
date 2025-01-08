@@ -2,6 +2,10 @@ package burp;
 
 import java.util.ArrayList;
 import java.util.Arrays;
+import java.util.HashMap;
+import java.util.Map;
+import java.util.Set;
+import java.util.HashSet;
 
 import static burp.Constants.*;
 
@@ -87,66 +91,92 @@ class ContextAnalyzer
     }
 
     public String getIssuesForAllParameters() {
-        String reflectedPayloadValue = "",
-            contextChars = null,
-            context = "",
-            symbols = "";
-        for (Reflection payload: this.reflections)
-        {
-            reflectedPayloadValue = Aggressive.prepareReflectedPayload( payload.value );
-            if (reflectedPayloadValue.length() > 0 && payload.getStart() >= 0)
-            {
-                context = getContext( payload.getStart() );
-                contextChars = checksContextSecurity( reflectedPayloadValue, context );
-                if ( contextChars != null ) {
+        // Map to store characters found in each context
+        Map<String, Set<String>> contextFindings = new HashMap<>();
+        
+        for (Reflection payload : this.reflections) {
+            String reflectedPayloadValue = Aggressive.prepareReflectedPayload(payload.value);
+            if (reflectedPayloadValue.length() > 0 && payload.getStart() >= 0) {
+                String context = getContext(payload.getStart());
+                String contextChars = checksContextSecurity(reflectedPayloadValue, context);
+                
+                if (contextChars != null) {
                     this.vulnerableFlag = true;
-                    symbols += String.valueOf(context);
+                    contextFindings.putIfAbsent(context, new HashSet<>());
+                    contextFindings.get(context).add(contextChars);
                     reflectedPayloadValue = reflectedPayloadValue.replace(contextChars, "");
-                    if ( reflectedPayloadValue.length() > 0 ) {
-                        symbols +=  ", other chars: ";
-                    }
                 }
+                
+                // If there are remaining chars, they go into the current context
                 if (reflectedPayloadValue.length() > 0) {
-                    for (String str : reflectedPayloadValue.split("")) {
-                        symbols += str + " ";
+                    contextFindings.putIfAbsent(context, new HashSet<>());
+                    for (String chr : reflectedPayloadValue.split("")) {
+                        contextFindings.get(context).add(chr);
                     }
                 }
-                symbols = symbols + " || ";
             }
         }
-
-        if (!symbols.equals("")) {
-            symbols = symbols.substring(0, symbols.length() - 4).replaceAll("<", "&lt;").replaceAll("'", "&#39;").replaceAll("\"", "&quot;").replaceAll("\\|\\|", "<b>|</b>");
+        
+        // Build the output string
+        StringBuilder result = new StringBuilder();
+        
+        // Process contexts in a specific order
+        String[][] contextGroups = {
+            // HTML context
+            {CONTEXT_OUT_OF_TAG},
+            // Tag context
+            {CONTEXT_IN_TAG},
+            // Attribute contexts
+            {CONTEXT_IN_ATTRIBUTE_Q, CONTEXT_IN_ATTRIBUTE_DQ, CONTEXT_IN_ATTRIBUTE_BT},
+            // Script contexts
+            {CONTEXT_IN_SCRIPT_TAG, CONTEXT_IN_SCRIPT_TAG_STRING_Q, CONTEXT_IN_SCRIPT_TAG_STRING_DQ, CONTEXT_IN_SCRIPT_TAG_STRING_BT}
+        };
+        
+        for (String[] group : contextGroups) {
+            for (String context : group) {
+                if (contextFindings.containsKey(context)) {
+                    // For contexts that already include their special char in the name (like "HTML: <"),
+                    // we don't need to append the char again
+                    if (context.equals(CONTEXT_OUT_OF_TAG) || 
+                        context.equals(CONTEXT_IN_ATTRIBUTE_Q) ||
+                        context.equals(CONTEXT_IN_ATTRIBUTE_DQ) ||
+                        context.equals(CONTEXT_IN_ATTRIBUTE_BT) ||
+                        context.equals(CONTEXT_IN_SCRIPT_TAG_STRING_Q) ||
+                        context.equals(CONTEXT_IN_SCRIPT_TAG_STRING_DQ) ||
+                        context.equals(CONTEXT_IN_SCRIPT_TAG_STRING_BT)) {
+                        result.append(context);
+                    } else {
+                        // For other contexts, append the found chars
+                        result.append(context);
+                        Set<String> chars = contextFindings.get(context);
+                        if (!chars.isEmpty() && !chars.contains("ALL")) {
+                            result.append(" (found: ").append(String.join(" ", chars)).append(")");
+                        }
+                    }
+                    result.append(" | ");
+                }
+            }
+        }
+        
+        String finalResult = result.toString().trim();
+        if (finalResult.endsWith("|")) {
+            finalResult = finalResult.substring(0, finalResult.length() - 1).trim();
+        }
+        
+        if (!finalResult.isEmpty()) {
+            finalResult = finalResult
+                .replaceAll("<", "&lt;")
+                .replaceAll("'", "&#39;")
+                .replaceAll("\"", "&quot;")
+                .replaceAll("`", "&#96;");
+            
             if (vulnerableFlag) {
-                symbols += CONTEXT_VULN_FLAG;
+                finalResult += CONTEXT_VULN_FLAG;
             }
         }
-
-        return symbols;
+        
+        return finalResult;
     }
-
-    // private String checkScript(int place, int start) {
-    //     String tmpContext = this.body.substring( this.tagList.get(place).end, start ).replaceAll("\\[\"']", "");
-    //     int quote = 0;
-    //     int doubleQuote = 0;
-    //     for (char c: tmpContext.toCharArray()) {
-    //         if ( c == '\'' && doubleQuote == 0 )
-    //             if ( quote == 1 )
-    //                 quote = 0;
-    //             else
-    //                 quote = 1;
-    //         else if ( c == '"' && quote == 0 )
-    //             if ( doubleQuote == 1 )
-    //                 doubleQuote = 0;
-    //             else
-    //                 doubleQuote = 1;
-    //     }
-    //     if (quote == 1)
-    //         return CONTEXT_IN_SCRIPT_TAG_STRING_Q;
-    //     if (doubleQuote == 1)
-    //         return CONTEXT_IN_SCRIPT_TAG_STRING_DQ;
-    //     return CONTEXT_IN_SCRIPT_TAG;
-    // }
 
     private String checkScript(int place, int start) {
         String tmpContext = this.body.substring( this.tagList.get(place).end, start).replaceAll("\\[\"']", "");
@@ -172,25 +202,6 @@ class ContextAnalyzer
     
         return CONTEXT_IN_SCRIPT_TAG;
     }
-    
-
-    // private String checkContextInTag(ArrayList<Attribute> attrList, int start) {
-    //     char delimiter = '\0';
-    //     for (Attribute attr: attrList) {
-    //         if ( attr.start <= start && attr.end >= start ) {
-    //             delimiter = attr.delimiter;
-    //             break;
-    //         }
-    //     }
-    //     switch (delimiter) {
-    //         case '\'':
-    //             return CONTEXT_IN_ATTRIBUTE_Q;
-    //         case '"':
-    //             return CONTEXT_IN_ATTRIBUTE_DQ;
-    //         default:
-    //             return CONTEXT_IN_TAG;
-    //     }
-    // }
 
     private String checkContextInTag(ArrayList<Attribute> attrList, int start) {
         char delimiter = '\0';
@@ -211,7 +222,6 @@ class ContextAnalyzer
                 return CONTEXT_IN_TAG;
         }
     }
-    
 
     private void deleteTagsBetweenScript() {
         ArrayList<Tag> tmpTags = new ArrayList<>();
@@ -308,12 +318,6 @@ class ContextAnalyzer
                         else if (body.charAt(i) != ' ')
                             attrStep = -1;
                     } else if (attrStep == 2) {
-                        // if (body.charAt(i) == '"' || body.charAt(i) == '\'') {
-                        //     attrDelimiter = body.charAt(i);
-                        //     startAttr = i;
-                        // } else if (body.charAt(i) != ' ') {
-                        //     startAttr = i - 1;
-                        // }
                         if (body.charAt(i) == '"' || body.charAt(i) == '\'' || body.charAt(i) == '`') {
                             attrDelimiter = body.charAt(i);
                             startAttr = i;
@@ -336,118 +340,45 @@ class ContextAnalyzer
         }
     }
 
-    // private String checksContextSecurity(String reflectedPayload, String context){
-    //     String contextChars = null;
-    //     switch (context) {
-    //         case CONTEXT_OUT_OF_TAG: {
-    //             if (reflectedPayload.contains("<")) {
-    //                 contextChars = "<";
-    //             }
-    //         }
-    //         break;
-    //         case CONTEXT_IN_ATTRIBUTE_Q: {
-    //             if (reflectedPayload.contains("'")) {
-    //                 contextChars = "'";
-    //             }
-    //         }
-    //         break;
-    //         case CONTEXT_IN_ATTRIBUTE_DQ: {
-    //             if (reflectedPayload.contains("\"")) {
-    //                 contextChars = "\"";
-    //             }
-    //         }
-    //         break;
-    //         case CONTEXT_IN_TAG: {
-    //             if (reflectedPayload.length() > 0)
-    //                 contextChars = reflectedPayload;
-    //             else
-    //                 contextChars = "ALL";
-    //         }
-    //         break;
-    //         case CONTEXT_IN_SCRIPT_TAG_STRING_Q: {
-    //             if (reflectedPayload.contains("'")) {
-    //                 contextChars = "'";
-    //             }
-    //         }
-    //         break;
-    //         case CONTEXT_IN_SCRIPT_TAG_STRING_DQ: {
-    //             if (reflectedPayload.contains("\"")) {
-    //                 contextChars = "\"";
-    //             }
-    //         }
-    //         break;
-    //         case CONTEXT_IN_SCRIPT_TAG: {
-    //             if (reflectedPayload.length() > 0)
-    //                 contextChars = reflectedPayload;
-    //             else
-    //                 contextChars = "ALL";
-    //         }
-    //         break;
-    //     }
-    //     return contextChars;
-    // }
-
     private String checksContextSecurity(String reflectedPayload, String context) {
-        String contextChars = null;
+        // For contexts that expect specific characters, return only those characters if found
         switch (context) {
-            case CONTEXT_OUT_OF_TAG: {
-                if (reflectedPayload.contains("<")) {
-                    contextChars = "<";
+            case CONTEXT_OUT_OF_TAG:
+                return reflectedPayload.contains("<") ? "<" : null;
+                
+            case CONTEXT_IN_ATTRIBUTE_Q:
+                return reflectedPayload.contains("'") ? "'" : null;
+                
+            case CONTEXT_IN_ATTRIBUTE_DQ:
+                return reflectedPayload.contains("\"") ? "\"" : null;
+                
+            case CONTEXT_IN_ATTRIBUTE_BT:
+                return reflectedPayload.contains("`") ? "`" : null;
+                
+            case CONTEXT_IN_SCRIPT_TAG_STRING_Q:
+                return reflectedPayload.contains("'") ? "'" : null;
+                
+            case CONTEXT_IN_SCRIPT_TAG_STRING_DQ:
+                return reflectedPayload.contains("\"") ? "\"" : null;
+                
+            case CONTEXT_IN_SCRIPT_TAG_STRING_BT:
+                return reflectedPayload.contains("`") ? "`" : null;
+                
+            // For contexts that can accept any character
+            case CONTEXT_IN_TAG:
+            case CONTEXT_IN_SCRIPT_TAG:
+                if (reflectedPayload.length() > 0) {
+                    // Return each character that was found
+                    StringBuilder foundChars = new StringBuilder();
+                    for (char c : reflectedPayload.toCharArray()) {
+                        foundChars.append(c);
+                    }
+                    return foundChars.toString();
                 }
-            }
-            break;
-            case CONTEXT_IN_ATTRIBUTE_Q: {
-                if (reflectedPayload.contains("'")) {
-                    contextChars = "'";
-                }
-            }
-            break;
-            case CONTEXT_IN_ATTRIBUTE_DQ: {
-                if (reflectedPayload.contains("\"")) {
-                    contextChars = "\"";
-                }
-            }
-            break;
-            case CONTEXT_IN_ATTRIBUTE_BT: {
-                if (reflectedPayload.contains("`")) {
-                    contextChars = "`";
-                }
-            }
-            break;
-            case CONTEXT_IN_TAG: {
-                if (reflectedPayload.length() > 0)
-                    contextChars = reflectedPayload;
-                else
-                    contextChars = "ALL";
-            }
-            break;
-            case CONTEXT_IN_SCRIPT_TAG_STRING_Q: {
-                if (reflectedPayload.contains("'")) {
-                    contextChars = "'";
-                }
-            }
-            break;
-            case CONTEXT_IN_SCRIPT_TAG_STRING_DQ: {
-                if (reflectedPayload.contains("\"")) {
-                    contextChars = "\"";
-                }
-            }
-            break;
-            case CONTEXT_IN_SCRIPT_TAG_STRING_BT: {
-                if (reflectedPayload.contains("`")) {
-                    contextChars = "`";
-                }
-            }
-            break;
-            case CONTEXT_IN_SCRIPT_TAG: {
-                if (reflectedPayload.length() > 0)
-                    contextChars = reflectedPayload;
-                else
-                    contextChars = "ALL";
-            }
-            break;
+                return null;
+                
+            default:
+                return null;
         }
-        return contextChars;
     }
-    
 }

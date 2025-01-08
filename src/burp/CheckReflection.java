@@ -365,7 +365,7 @@ class Aggressive
     private IHttpRequestResponse baseRequestResponse;
     private String host;
     private int port;
-    private static final String PAYLOAD_GREP = "p@y";
+    private static final String PAYLOAD_GREP = "qzx";
     private static final String PAYLOAD = "<\"'`";
     private static final String PAYLOAD_JSON = "<\\\"'`";
     private Pattern pattern;
@@ -378,7 +378,10 @@ class Aggressive
         this.baseRequestResponse = baseRequestResponse;
         this.host = helpers.analyzeRequest(baseRequestResponse).getUrl().getHost();
         this.port = helpers.analyzeRequest(baseRequestResponse).getUrl().getPort();
-        this.pattern = Pattern.compile(PAYLOAD_GREP + "([_%&;<\"'`#\\\\0-9a-z]{1,15}?)" + PAYLOAD_GREP);
+        // Pattern for matching individual special characters between markers
+        this.pattern = Pattern.compile(PAYLOAD_GREP + "([<\"'`])" + PAYLOAD_GREP);
+        // // OLD ONE KEEP FOR NOW
+        // this.pattern = Pattern.compile(PAYLOAD_GREP + "([_%&;<\"'`#\\\\0-9a-z]{1,15}?)" + PAYLOAD_GREP);
         this.settings = settings;
     }
 
@@ -439,53 +442,98 @@ class Aggressive
                 symbols = "";
         int bodyOffset;
         try {
-            callbacks.printOutput("[DEBUG-PAYLOAD] Sending test request with payload: " + PAYLOAD);
-            callbacks.printOutput("[DEBUG-PAYLOAD] Payload bytes: " + Arrays.toString(PAYLOAD.getBytes()));
+            Map<String, ArrayList<int[]>> reflectionMap = new HashMap<>();
             
-            IHttpRequestResponse responseObject = this.callbacks.makeHttpRequest(
-                    this.baseRequestResponse.getHttpService(),
-                    testRequest.getBytes()
-            );
-            String response = helpers.bytesToString(responseObject.getResponse());
-            callbacks.printOutput("[DEBUG-PAYLOAD] Got response of length: " + response.length());
+            // Parse the parameter from the test request
+            IRequestInfo requestInfo = helpers.analyzeRequest(testRequest.getBytes());
+            List<IParameter> parameters = requestInfo.getParameters();
+            if (parameters.isEmpty()) {
+                return "";
+            }
+            IParameter currentParam = parameters.get(0);
+            Map<String, Object> parameter = new HashMap<>();
+            parameter.put(TYPE, Integer.valueOf(currentParam.getType()));
+            parameter.put(VALUE_START, currentParam.getValueStart());
+            parameter.put(VALUE_END, currentParam.getValueEnd());
+            
+            String chars = parameter.get(TYPE).equals(IParameter.PARAM_JSON) ? PAYLOAD_JSON : PAYLOAD;
+            
+            // Test each special character individually
+            for (char c : chars.toCharArray()) {
+                callbacks.printOutput("[DEBUG-PAYLOAD] Testing character: " + c);
+                String singleCharRequest = prepareRequest(parameter, String.valueOf(c));
+                
+                IHttpRequestResponse responseObject = this.callbacks.makeHttpRequest(
+                        this.baseRequestResponse.getHttpService(),
+                        singleCharRequest.getBytes()
+                );
+                String response = helpers.bytesToString(responseObject.getResponse());
+                callbacks.printOutput("[DEBUG-PAYLOAD] Got response of length: " + response.length());
 
-            bodyOffset = helpers.analyzeResponse(responseObject.getResponse()).getBodyOffset();
+                bodyOffset = helpers.analyzeResponse(responseObject.getResponse()).getBodyOffset();
 
-            Matcher matcher = this.pattern.matcher(response);
-            ArrayList<int[]> payloadIndexes = new ArrayList<>();
-            while (matcher.find()) {
-                String matchedContent = response.substring(matcher.start(), matcher.end());
-                callbacks.printOutput("[DEBUG-PAYLOAD] Found match: " + matchedContent);
-                callbacks.printOutput("[DEBUG-PAYLOAD] Match bytes: " + Arrays.toString(matchedContent.getBytes()));
-                payloadIndexes.add(new int[]{matcher.start() - bodyOffset, matcher.end() - bodyOffset});
+                // Look for reflection of this specific character
+                Pattern singleCharPattern = Pattern.compile(PAYLOAD_GREP + c + PAYLOAD_GREP);
+                Matcher matcher = singleCharPattern.matcher(response);
+                ArrayList<int[]> payloadIndexes = new ArrayList<>();
+                
+                while (matcher.find()) {
+                    String matchedContent = response.substring(matcher.start(), matcher.end());
+                    callbacks.printOutput("[DEBUG-PAYLOAD] Found match: " + matchedContent);
+                    callbacks.printOutput("[DEBUG-PAYLOAD] Match bytes: " + Arrays.toString(matchedContent.getBytes()));
+                    payloadIndexes.add(new int[]{matcher.start() - bodyOffset, matcher.end() - bodyOffset});
+                }
+                
+                if (!payloadIndexes.isEmpty()) {
+                    reflectionMap.put(String.valueOf(c), payloadIndexes);
+                }
             }
 
-            if (payloadIndexes.isEmpty()) {
-                callbacks.printOutput("[DEBUG-PAYLOAD] No payload matches found in response");
+            if (reflectionMap.isEmpty()) {
+                callbacks.printOutput("[DEBUG-PAYLOAD] No special characters reflected");
                 return "";
             }
 
+            // Get a combined response for context analysis
+            String combinedPayload = String.join("", reflectionMap.keySet());
+            String response = helpers.bytesToString(this.callbacks.makeHttpRequest(
+                    this.baseRequestResponse.getHttpService(),
+                    prepareRequest(parameter, combinedPayload).getBytes()
+            ).getResponse());
+            
+            bodyOffset = helpers.analyzeResponse(response.getBytes()).getBodyOffset();
+            
             if (settings.getCheckContext() && bodyOffset != response.length()) {
-                ContextAnalyzer contextAnalyzer = new ContextAnalyzer(response.substring(bodyOffset).toLowerCase(), payloadIndexes);
+                // Combine all payload indexes for context analysis
+                ArrayList<int[]> allIndexes = new ArrayList<>();
+                reflectionMap.values().forEach(allIndexes::addAll);
+                
+                ContextAnalyzer contextAnalyzer = new ContextAnalyzer(response.substring(bodyOffset).toLowerCase(), allIndexes);
                 symbols = contextAnalyzer.getIssuesForAllParameters();
                 callbacks.printOutput("[DEBUG-PAYLOAD] Context analysis results: " + symbols);
             } else if(bodyOffset != 1) {
-                for (int[] indexPair: payloadIndexes) {
-                    String extractedValue = response.substring(indexPair[0] + bodyOffset, indexPair[1] + bodyOffset);
-                    callbacks.printOutput("[DEBUG-PAYLOAD] Processing reflected value: " + extractedValue);
-                    callbacks.printOutput("[DEBUG-PAYLOAD] Reflected value bytes: " + Arrays.toString(extractedValue.getBytes()));
+                symbols = "";
+                for (Map.Entry<String, ArrayList<int[]>> entry : reflectionMap.entrySet()) {
+                    String character = entry.getKey();
+                    ArrayList<int[]> indexes = entry.getValue();
                     
-                    reflectedPayloadValue = Aggressive.prepareReflectedPayload(extractedValue);
-                    callbacks.printOutput("[DEBUG-PAYLOAD] Prepared payload value: " + reflectedPayloadValue);
-                    callbacks.printOutput("[DEBUG-PAYLOAD] Prepared payload bytes: " + Arrays.toString(reflectedPayloadValue.getBytes()));
-                    
-                    if (reflectedPayloadValue.length() > 0) {
-                        for (String str : reflectedPayloadValue.split("")) {
-                            callbacks.printOutput("[DEBUG-PAYLOAD] Adding symbol: " + str);
-                            symbols += str + " ";
+                    for (int[] indexPair : indexes) {
+                        String extractedValue = response.substring(indexPair[0] + bodyOffset, indexPair[1] + bodyOffset);
+                        callbacks.printOutput("[DEBUG-PAYLOAD] Processing reflected value: " + extractedValue);
+                        callbacks.printOutput("[DEBUG-PAYLOAD] Reflected value bytes: " + Arrays.toString(extractedValue.getBytes()));
+                        
+                        reflectedPayloadValue = Aggressive.prepareReflectedPayload(extractedValue);
+                        callbacks.printOutput("[DEBUG-PAYLOAD] Prepared payload value: " + reflectedPayloadValue);
+                        callbacks.printOutput("[DEBUG-PAYLOAD] Prepared payload bytes: " + Arrays.toString(reflectedPayloadValue.getBytes()));
+                        
+                        if (reflectedPayloadValue.length() > 0) {
+                            callbacks.printOutput("[DEBUG-PAYLOAD] Adding symbol: " + character);
+                            symbols += character + " ";
                         }
                     }
-                    symbols = symbols + " || ";
+                    if (!symbols.isEmpty()) {
+                        symbols += " || ";
+                    }
                 }
 
                 if (!symbols.equals("")) {
@@ -508,11 +556,11 @@ class Aggressive
     }
 
     private String prepareRequest(Map parameter) {
-        String payload = PAYLOAD;
-        if(parameter.get(TYPE).equals(IParameter.PARAM_JSON)){
-            payload = PAYLOAD_JSON;
-        }
+        String payload = parameter.get(TYPE).equals(IParameter.PARAM_JSON) ? PAYLOAD_JSON : PAYLOAD;
+        return prepareRequest(parameter, payload);
+    }
 
+    private String prepareRequest(Map parameter, String payload) {
         String tmpRequest = helpers.bytesToString(baseRequestResponse.getRequest()).substring(0, (int)parameter.get("ValueStart")) + PAYLOAD_GREP
                 + payload + PAYLOAD_GREP + helpers.bytesToString(baseRequestResponse.getRequest()).substring((int)parameter.get("ValueEnd"));
         String contentLength = "";
