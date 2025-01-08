@@ -11,7 +11,7 @@ import java.util.List;
 
 import static burp.Constants.*;
 
-public class BurpExtender implements IBurpExtender, IScannerCheck, ITab
+public class BurpExtender implements IBurpExtender, IScannerCheck, ITab, IContextMenuFactory
 {
     public static final String PLUGIN_NAME = "Reflector";
     private IBurpExtenderCallbacks callbacks;
@@ -53,6 +53,9 @@ public class BurpExtender implements IBurpExtender, IScannerCheck, ITab
 
         // register ourselves as a custom scanner check
         callbacks.registerScannerCheck(this);
+
+        // register ourselves as a context menu factory
+        callbacks.registerContextMenuFactory(this);
 
         SwingUtilities.invokeLater(new Runnable()
         {
@@ -265,20 +268,74 @@ public class BurpExtender implements IBurpExtender, IScannerCheck, ITab
     // implement IScannerCheck
     //
 
-    private String buildIssueForReflection( Map param)
-    {
-        String reflectedIn = "";
-        reflectedIn+="<li>";
-        reflectedIn+=param.get(NAME);
-        reflectedIn+=" - reflected "+ String.valueOf(((List)param.get(MATCHES)).size())+" times ";
-        if (param.containsKey(VULNERABLE))
-        {
-            reflectedIn += "and allow the following characters: "+ String.valueOf(param.get(VULNERABLE));
-            if (settings.getCheckContext() && !String.valueOf(param.get(VULNERABLE)).contains(CONTEXT_VULN_FLAG))
-                return reflectedIn+ "</li>" ;
+
+    private String buildIssueForReflection(Map param) {
+        int type;
+        Object typeObj = param.get(TYPE);
+        
+        if (typeObj instanceof Byte) {
+            type = ((Byte) typeObj).intValue();
+        } else if (typeObj instanceof Integer) {
+            type = (Integer) typeObj;
+        } else {
+            type = -1; // default case
+        }
+        
+        String parameterType = getParameterTypeDescription(type);
+        String paramName = (String)param.get(NAME);
+        List<int[]> matches = (List<int[]>)param.get(MATCHES);
+        String vulnerableChars = param.containsKey(VULNERABLE) ? (String)param.get(VULNERABLE) : "";
+        
+        StringBuilder result = new StringBuilder("<li>");
+        result.append(String.format("%s '%s' - reflected %d times",
+            parameterType,
+            paramName,
+            matches.size()));
+        
+        if (!vulnerableChars.isEmpty()) {
+            result.append(" and allow the following characters: ").append(vulnerableChars);
+            
+            // Context checking logic
+            if (settings.getCheckContext() && !vulnerableChars.contains(CONTEXT_VULN_FLAG)) {
+                return result.append("</li>").toString();
+            }
             issueName = XSS_VULNERABLE;
         }
-        return reflectedIn+ "</li>" ;
+        
+        return result.append("</li>").toString();
+    }
+
+    // ## previous version
+    // private String buildIssueForReflection( Map param)
+    // {
+    //     String reflectedIn = "";
+    //     reflectedIn+="<li>";
+    //     reflectedIn+=param.get(NAME);
+    //     reflectedIn+=" - reflected "+ String.valueOf(((List)param.get(MATCHES)).size())+" times ";
+    //     if (param.containsKey(VULNERABLE))
+    //     {
+    //         reflectedIn += "and allow the following characters: "+ String.valueOf(param.get(VULNERABLE));
+    //         if (settings.getCheckContext() && !String.valueOf(param.get(VULNERABLE)).contains(CONTEXT_VULN_FLAG))
+    //             return reflectedIn+ "</li>" ;
+    //         issueName = XSS_VULNERABLE;
+    //     }
+    //     return reflectedIn+ "</li>" ;
+    // }
+    
+
+    private String getParameterTypeDescription(Integer type) {
+        if (type == IParameter.PARAM_COOKIE) {
+            return "Cookie";
+        } else if (type == IParameter.PARAM_URL) {
+            return "URL Parameter";
+        } else if (type == IParameter.PARAM_BODY) {
+            return "Body Parameter";
+        } else if (type == Constants.REQUEST_HEADER) {
+            return "Request Header";
+        } else if (type == Constants.RESPONSE_HEADER) {
+            return "Response Header";
+        }
+        return "Parameter";
     }
 
     @Override
@@ -403,6 +460,35 @@ public class BurpExtender implements IBurpExtender, IScannerCheck, ITab
         } else {
             return 0;
         }
+    }
+
+    @Override
+    public List<JMenuItem> createMenuItems(IContextMenuInvocation invocation) {
+        List<JMenuItem> menuItems = new ArrayList<>();
+        
+        JMenuItem menuItem = new JMenuItem("Test this URL for reflections");
+        menuItem.addActionListener(e -> {
+            // Run in a separate thread
+            new Thread(() -> {
+                IHttpRequestResponse[] messages = invocation.getSelectedMessages();
+                if (messages != null && messages.length > 0) {
+                    for (IHttpRequestResponse message : messages) {
+                        callbacks.printOutput("[+] Starting reflection test for: " + 
+                            helpers.analyzeRequest(message).getUrl().toString());
+                        // Run the same scan as the passive scanner
+                        List<IScanIssue> issues = doPassiveScan(message);
+                        if (issues != null) {
+                            for (IScanIssue issue : issues) {
+                                callbacks.addScanIssue(issue);
+                            }
+                        }
+                    }
+                }
+            }, "Reflection-Scanner-Thread").start();
+        });
+        
+        menuItems.add(menuItem);
+        return menuItems;
     }
 }
 

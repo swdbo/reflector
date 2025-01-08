@@ -125,35 +125,77 @@ class ContextAnalyzer
         return symbols;
     }
 
+    // private String checkScript(int place, int start) {
+    //     String tmpContext = this.body.substring( this.tagList.get(place).end, start ).replaceAll("\\[\"']", "");
+    //     int quote = 0;
+    //     int doubleQuote = 0;
+    //     for (char c: tmpContext.toCharArray()) {
+    //         if ( c == '\'' && doubleQuote == 0 )
+    //             if ( quote == 1 )
+    //                 quote = 0;
+    //             else
+    //                 quote = 1;
+    //         else if ( c == '"' && quote == 0 )
+    //             if ( doubleQuote == 1 )
+    //                 doubleQuote = 0;
+    //             else
+    //                 doubleQuote = 1;
+    //     }
+    //     if (quote == 1)
+    //         return CONTEXT_IN_SCRIPT_TAG_STRING_Q;
+    //     if (doubleQuote == 1)
+    //         return CONTEXT_IN_SCRIPT_TAG_STRING_DQ;
+    //     return CONTEXT_IN_SCRIPT_TAG;
+    // }
+
     private String checkScript(int place, int start) {
-        String tmpContext = this.body.substring( this.tagList.get(place).end, start ).replaceAll("\\[\"']", "");
+        String tmpContext = this.body.substring( this.tagList.get(place).end, start).replaceAll("\\[\"']", "");
         int quote = 0;
         int doubleQuote = 0;
-        for (char c: tmpContext.toCharArray()) {
-            if ( c == '\'' && doubleQuote == 0 )
-                if ( quote == 1 )
-                    quote = 0;
-                else
-                    quote = 1;
-            else if ( c == '"' && quote == 0 )
-                if ( doubleQuote == 1 )
-                    doubleQuote = 0;
-                else
-                    doubleQuote = 1;
+        int backtick = 0;
+    
+        for (char c : tmpContext.toCharArray()) {
+            if (c == '\'' && doubleQuote == 0 && backtick == 0)
+                quote = (quote == 0) ? 1 : 0;
+            else if (c == '"' && quote == 0 && backtick == 0)
+                doubleQuote = (doubleQuote == 0) ? 1 : 0;
+            else if (c == '`' && quote == 0 && doubleQuote == 0)
+                backtick = (backtick == 0) ? 1 : 0;
         }
+    
         if (quote == 1)
             return CONTEXT_IN_SCRIPT_TAG_STRING_Q;
         if (doubleQuote == 1)
             return CONTEXT_IN_SCRIPT_TAG_STRING_DQ;
+        if (backtick == 1)
+            return CONTEXT_IN_SCRIPT_TAG_STRING_BT;
+    
         return CONTEXT_IN_SCRIPT_TAG;
-
-
     }
+    
+
+    // private String checkContextInTag(ArrayList<Attribute> attrList, int start) {
+    //     char delimiter = '\0';
+    //     for (Attribute attr: attrList) {
+    //         if ( attr.start <= start && attr.end >= start ) {
+    //             delimiter = attr.delimiter;
+    //             break;
+    //         }
+    //     }
+    //     switch (delimiter) {
+    //         case '\'':
+    //             return CONTEXT_IN_ATTRIBUTE_Q;
+    //         case '"':
+    //             return CONTEXT_IN_ATTRIBUTE_DQ;
+    //         default:
+    //             return CONTEXT_IN_TAG;
+    //     }
+    // }
 
     private String checkContextInTag(ArrayList<Attribute> attrList, int start) {
         char delimiter = '\0';
-        for (Attribute attr: attrList) {
-            if ( attr.start <= start && attr.end >= start ) {
+        for (Attribute attr : attrList) {
+            if (attr.start <= start && attr.end >= start) {
                 delimiter = attr.delimiter;
                 break;
             }
@@ -163,10 +205,13 @@ class ContextAnalyzer
                 return CONTEXT_IN_ATTRIBUTE_Q;
             case '"':
                 return CONTEXT_IN_ATTRIBUTE_DQ;
+            case '`':
+                return CONTEXT_IN_ATTRIBUTE_BT;
             default:
                 return CONTEXT_IN_TAG;
         }
     }
+    
 
     private void deleteTagsBetweenScript() {
         ArrayList<Tag> tmpTags = new ArrayList<>();
@@ -263,7 +308,13 @@ class ContextAnalyzer
                         else if (body.charAt(i) != ' ')
                             attrStep = -1;
                     } else if (attrStep == 2) {
-                        if (body.charAt(i) == '"' || body.charAt(i) == '\'') {
+                        // if (body.charAt(i) == '"' || body.charAt(i) == '\'') {
+                        //     attrDelimiter = body.charAt(i);
+                        //     startAttr = i;
+                        // } else if (body.charAt(i) != ' ') {
+                        //     startAttr = i - 1;
+                        // }
+                        if (body.charAt(i) == '"' || body.charAt(i) == '\'' || body.charAt(i) == '`') {
                             attrDelimiter = body.charAt(i);
                             startAttr = i;
                         } else if (body.charAt(i) != ' ') {
@@ -285,7 +336,58 @@ class ContextAnalyzer
         }
     }
 
-    private String checksContextSecurity(String reflectedPayload, String context){
+    // private String checksContextSecurity(String reflectedPayload, String context){
+    //     String contextChars = null;
+    //     switch (context) {
+    //         case CONTEXT_OUT_OF_TAG: {
+    //             if (reflectedPayload.contains("<")) {
+    //                 contextChars = "<";
+    //             }
+    //         }
+    //         break;
+    //         case CONTEXT_IN_ATTRIBUTE_Q: {
+    //             if (reflectedPayload.contains("'")) {
+    //                 contextChars = "'";
+    //             }
+    //         }
+    //         break;
+    //         case CONTEXT_IN_ATTRIBUTE_DQ: {
+    //             if (reflectedPayload.contains("\"")) {
+    //                 contextChars = "\"";
+    //             }
+    //         }
+    //         break;
+    //         case CONTEXT_IN_TAG: {
+    //             if (reflectedPayload.length() > 0)
+    //                 contextChars = reflectedPayload;
+    //             else
+    //                 contextChars = "ALL";
+    //         }
+    //         break;
+    //         case CONTEXT_IN_SCRIPT_TAG_STRING_Q: {
+    //             if (reflectedPayload.contains("'")) {
+    //                 contextChars = "'";
+    //             }
+    //         }
+    //         break;
+    //         case CONTEXT_IN_SCRIPT_TAG_STRING_DQ: {
+    //             if (reflectedPayload.contains("\"")) {
+    //                 contextChars = "\"";
+    //             }
+    //         }
+    //         break;
+    //         case CONTEXT_IN_SCRIPT_TAG: {
+    //             if (reflectedPayload.length() > 0)
+    //                 contextChars = reflectedPayload;
+    //             else
+    //                 contextChars = "ALL";
+    //         }
+    //         break;
+    //     }
+    //     return contextChars;
+    // }
+
+    private String checksContextSecurity(String reflectedPayload, String context) {
         String contextChars = null;
         switch (context) {
             case CONTEXT_OUT_OF_TAG: {
@@ -303,6 +405,12 @@ class ContextAnalyzer
             case CONTEXT_IN_ATTRIBUTE_DQ: {
                 if (reflectedPayload.contains("\"")) {
                     contextChars = "\"";
+                }
+            }
+            break;
+            case CONTEXT_IN_ATTRIBUTE_BT: {
+                if (reflectedPayload.contains("`")) {
+                    contextChars = "`";
                 }
             }
             break;
@@ -325,6 +433,12 @@ class ContextAnalyzer
                 }
             }
             break;
+            case CONTEXT_IN_SCRIPT_TAG_STRING_BT: {
+                if (reflectedPayload.contains("`")) {
+                    contextChars = "`";
+                }
+            }
+            break;
             case CONTEXT_IN_SCRIPT_TAG: {
                 if (reflectedPayload.length() > 0)
                     contextChars = reflectedPayload;
@@ -335,4 +449,5 @@ class ContextAnalyzer
         }
         return contextChars;
     }
+    
 }

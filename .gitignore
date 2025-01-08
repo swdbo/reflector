@@ -6,3 +6,7 @@
 
 build/
 plugin.jar
+
+.DS_Store
+
+Reflector17.jar
