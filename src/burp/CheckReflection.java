@@ -73,8 +73,16 @@ public class CheckReflection {
         checkHeaders(responseHeaders, reflectedParameters, false, url);
         
         // Only do aggressive testing if we found reflections and aggressive mode is enabled
+        callbacks.printOutput("[DEBUG] Aggressive mode enabled: " + settings.getAggressiveMode());
+        callbacks.printOutput("[DEBUG] Found " + reflectedParameters.size() + " reflected parameters");
+        
         if (!reflectedParameters.isEmpty() && settings.getAggressiveMode()) {
             callbacks.printOutput("[+] Found reflections, starting aggressive testing...");
+            for (Map param : reflectedParameters) {
+                callbacks.printOutput("[DEBUG] Will test parameter: " + param.get(NAME) + 
+                    " (Type: " + getTypeString(((Integer)param.get(TYPE)).byteValue()) + 
+                    ", Reflected in: " + param.get(REFLECTED_IN) + ")");
+            }
             Aggressive scan = new Aggressive(settings, helpers, iHttpRequestResponse, callbacks, reflectedParameters);
             reflectedParameters = scan.scanReflectedParameters();
         } else {
@@ -157,9 +165,17 @@ public class CheckReflection {
                     parameterDescription.put(VALUE, parameter.getValue());
                     parameterDescription.put(TYPE, Integer.valueOf(parameter.getType()));
                     parameterDescription.put(MATCHES, originalMatches);
-                    parameterDescription.put(REFLECTED_IN, checkWhereReflectionPlaced(originalMatches));
+                    String reflectedIn = checkWhereReflectionPlaced(originalMatches);
+                    parameterDescription.put(REFLECTED_IN, reflectedIn);
                     parameterDescription.put(VALUE_START, parameter.getValueStart());
                     parameterDescription.put(VALUE_END, parameter.getValueEnd());
+                    
+                    callbacks.printOutput("[DEBUG] Parameter reflection details:");
+                    callbacks.printOutput("[DEBUG] - Name: " + parameter.getName());
+                    callbacks.printOutput("[DEBUG] - Type: " + parameterType);
+                    callbacks.printOutput("[DEBUG] - Reflected in: " + reflectedIn);
+                    callbacks.printOutput("[DEBUG] - Number of matches: " + originalMatches.size());
+                    
                     reflectedParameters.add(parameterDescription);
                 }
             }
@@ -167,13 +183,23 @@ public class CheckReflection {
     }
 
     private String getParameterTypeString(IParameter parameter) {
-        switch (parameter.getType()) {
+        return getTypeString(parameter.getType());
+    }
+
+    private String getTypeString(byte type) {
+        switch (type) {
             case IParameter.PARAM_COOKIE:
                 return "Cookie";
             case IParameter.PARAM_URL:
                 return "URL Parameter";
             case IParameter.PARAM_BODY:
                 return "Body Parameter";
+            case IParameter.PARAM_JSON:
+                return "JSON Parameter";
+            case Constants.REQUEST_HEADER:
+                return "Request Header";
+            case Constants.RESPONSE_HEADER:
+                return "Response Header";
             default:
                 return "Parameter";
         }
@@ -337,26 +363,6 @@ public class CheckReflection {
     }
 }
 
-class Pair
-{
-    private int start;
-    private int[] pair;
-    public Pair(int[] pair)
-    {
-        this.start = pair[0];
-        this.pair = pair;
-    }
-    public int getStart()
-    {
-        return start;
-    }
-    public int[] getPair()
-    {
-        return pair;
-    }
-}
-
-
 class Aggressive
 {
     private IExtensionHelpers helpers;
@@ -370,6 +376,7 @@ class Aggressive
     private static final String PAYLOAD_JSON = "<\\\"'`";
     private Pattern pattern;
     private Settings settings;
+    private List<String> reflectedSpecialChars;
 
     Aggressive(Settings settings, IExtensionHelpers helpers, IHttpRequestResponse baseRequestResponse, IBurpExtenderCallbacks callbacks, List<Map> reflectedParameters) {
         this.helpers = helpers;
@@ -383,6 +390,7 @@ class Aggressive
         // // OLD ONE KEEP FOR NOW
         // this.pattern = Pattern.compile(PAYLOAD_GREP + "([_%&;<\"'`#\\\\0-9a-z]{1,15}?)" + PAYLOAD_GREP);
         this.settings = settings;
+        this.reflectedSpecialChars = new ArrayList<>();
     }
 
     public List<Map> scanReflectedParameters(){
@@ -394,6 +402,12 @@ class Aggressive
             String paramName = (String)param.get(NAME);
             String paramType = getTypeString(((Integer)param.get(TYPE)).byteValue());
             callbacks.printOutput("[SPECIAL CHARS] Testing " + paramType + " '" + paramName + "' at " + url);
+            callbacks.printOutput("[DEBUG] Parameter details:");
+            callbacks.printOutput("[DEBUG] - Type: " + paramType);
+            callbacks.printOutput("[DEBUG] - Value: " + param.get(VALUE));
+            callbacks.printOutput("[DEBUG] - Reflected in: " + param.get(REFLECTED_IN));
+            callbacks.printOutput("[DEBUG] - Value start: " + param.get(VALUE_START));
+            callbacks.printOutput("[DEBUG] - Value end: " + param.get(VALUE_END));
             
             if(param.get(REFLECTED_IN).equals(HEADERS)) {
                 callbacks.printOutput("[SPECIAL CHARS] Skipping " + paramType + " reflection for '" + paramName + 
@@ -401,12 +415,15 @@ class Aggressive
                 continue;
             }
             
+            callbacks.printOutput("[DEBUG] Preparing test request for parameter: " + paramName);
             testRequest = prepareRequest(param);
+            callbacks.printOutput("[DEBUG] Test request prepared: " + testRequest.length() + " bytes");
             symbols = checkResponse(testRequest);
             
             if (!symbols.equals("")) {
                 callbacks.printOutput("[SPECIAL CHARS] " + paramType + " '" + paramName + "' is vulnerable to: " + symbols);
                 param.put(VULNERABLE, symbols + "\n");
+                param.put("reflectedSpecialChars", new ArrayList<>(reflectedSpecialChars));
             } else {
                 callbacks.printOutput("[SPECIAL CHARS] No special character vulnerabilities found for " + paramType + " '" + paramName + "'");
             }
@@ -482,6 +499,12 @@ class Aggressive
                     callbacks.printOutput("[DEBUG-PAYLOAD] Found match: " + matchedContent);
                     callbacks.printOutput("[DEBUG-PAYLOAD] Match bytes: " + Arrays.toString(matchedContent.getBytes()));
                     payloadIndexes.add(new int[]{matcher.start() - bodyOffset, matcher.end() - bodyOffset});
+                    
+                    // Track any special character that is found in a match
+                    if (!reflectedSpecialChars.contains(String.valueOf(c))) {
+                        reflectedSpecialChars.add(String.valueOf(c));
+                        callbacks.printOutput("[DEBUG-PAYLOAD] Added special char to tracking: " + c);
+                    }
                 }
                 
                 if (!payloadIndexes.isEmpty()) {
