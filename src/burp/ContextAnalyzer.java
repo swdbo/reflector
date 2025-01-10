@@ -56,9 +56,11 @@ class ContextAnalyzer
     private String body;
     private boolean vulnerableFlag;
     private ArrayList<Reflection> reflections;
+    private IBurpExtenderCallbacks callbacks;
 
-    ContextAnalyzer(String body, ArrayList<int[]> indexes) {
+    ContextAnalyzer(String body, ArrayList<int[]> indexes, IBurpExtenderCallbacks callbacks) {
         this.tagList = new ArrayList<>();
+        this.callbacks = callbacks;
         this.body = prepareBody(body, indexes);
         parseBody(this.body);
         deleteTagsBetweenScript();
@@ -74,20 +76,49 @@ class ContextAnalyzer
         return tmp;
     }
 
-    public String getContext(int start) {
-        int place = Arrays.binarySearch( this.startIndexes, start );
-        if (place == -1 || place * -1 > this.startIndexes.length || place > -1) {
+    public String getContext(int position) {
+        callbacks.printOutput("[DEBUG-CONTEXT-ANALYZER] Analyzing position: " + position);
+        // Add surrounding content for context
+        int start = Math.max(0, position - 50);
+        int end = Math.min(body.length(), position + 50);
+        callbacks.printOutput("[DEBUG-CONTEXT-ANALYZER] Surrounding content:\n" + 
+            body.substring(start, end));
+            
+        // Find the nearest opening tag before this position
+        int tagStart = body.lastIndexOf("<", position);
+        callbacks.printOutput("[DEBUG-CONTEXT-ANALYZER] Nearest tag start: " + tagStart);
+        
+        if (tagStart == -1) {
+            callbacks.printOutput("[DEBUG-CONTEXT-ANALYZER] No tag found before position");
             return CONTEXT_OUT_OF_TAG;
-        } else {
-            place = place * -1 - 1;
-            if ( this.tagList.get(place - 1).end < start &&  this.tagList.get(place).start > start) {
-                if ( this.tagList.get(place - 1).name.equals("script") ) {
-                    return checkScript( place - 1, start );
-                }
-                return CONTEXT_OUT_OF_TAG;
-            }
-            return checkContextInTag( this.tagList.get(place - 1).attrList, start );
         }
+
+        int tagEnd = body.indexOf(">", tagStart);
+        callbacks.printOutput("[DEBUG-CONTEXT-ANALYZER] Tag end: " + tagEnd);
+        
+        String tagContent = tagEnd != -1 ? body.substring(tagStart, tagEnd + 1) : "unclosed tag";
+        callbacks.printOutput("[DEBUG-CONTEXT-ANALYZER] Tag content: " + tagContent);
+        
+        // Check if we're inside a tag
+        if (tagEnd == -1 || position < tagEnd) {
+            callbacks.printOutput("[DEBUG-CONTEXT-ANALYZER] Position is inside tag");
+            return CONTEXT_IN_TAG;
+        }
+        
+        // Check if we're in text content (between tags)
+        if (position > tagEnd) {
+            // Look for the next opening tag
+            int nextTagStart = body.indexOf("<", position);
+            callbacks.printOutput("[DEBUG-CONTEXT-ANALYZER] Next tag start: " + nextTagStart);
+            
+            if (nextTagStart == -1 || position < nextTagStart) {
+                callbacks.printOutput("[DEBUG-CONTEXT-ANALYZER] Position is in text content");
+                return "Inside tag (no exploitable context found, but reflected chars: ";
+            }
+        }
+
+        callbacks.printOutput("[DEBUG-CONTEXT-ANALYZER] Position is in default HTML context");
+        return CONTEXT_OUT_OF_TAG;
     }
 
     public String getIssuesForAllParameters() {
@@ -96,9 +127,16 @@ class ContextAnalyzer
         
         for (Reflection payload : this.reflections) {
             String reflectedPayloadValue = Aggressive.prepareReflectedPayload(payload.value);
+            callbacks.printOutput("[DEBUG-CONTEXT] Processing reflection at position " + payload.getStart());
+            callbacks.printOutput("[DEBUG-CONTEXT] Reflected value: " + payload.value);
+            callbacks.printOutput("[DEBUG-CONTEXT] Prepared payload: " + reflectedPayloadValue);
+            
             if (reflectedPayloadValue.length() > 0 && payload.getStart() >= 0) {
                 String context = getContext(payload.getStart());
+                callbacks.printOutput("[DEBUG-CONTEXT] Detected context: " + context);
+                
                 String contextChars = checksContextSecurity(reflectedPayloadValue, context);
+                callbacks.printOutput("[DEBUG-CONTEXT] Context security check result: " + contextChars);
                 
                 if (contextChars != null) {
                     this.vulnerableFlag = true;
@@ -166,9 +204,13 @@ class ContextAnalyzer
                             result.append(context);
                         }
                     } else if (!chars.isEmpty()) {
-                        // For other contexts, append the found chars
+                        // For other contexts or when chars are found but not in exploitable context
                         result.append(context);
-                        if (!chars.contains("ALL")) {
+                        if (context.equals(CONTEXT_OUT_OF_TAG) || context.equals(CONTEXT_IN_TAG)) {
+                            result.append(" (no exploitable context found, but reflected chars: ")
+                                  .append(String.join(" ", chars))
+                                  .append(")");
+                        } else {
                             result.append(" (found: ").append(String.join(" ", chars)).append(")");
                         }
                     }
@@ -360,28 +402,46 @@ class ContextAnalyzer
     }
 
     private String checksContextSecurity(String reflectedPayload, String context) {
+        callbacks.printOutput("[DEBUG-CONTEXT-SECURITY] Checking security for context: " + context);
+        callbacks.printOutput("[DEBUG-CONTEXT-SECURITY] Reflected payload: " + reflectedPayload);
+        
+        String result = null;
         // For contexts that expect specific characters, return only those characters if found
         switch (context) {
             case CONTEXT_OUT_OF_TAG:
-                return reflectedPayload.contains("<") ? "<" : null;
+                result = reflectedPayload.contains("<") ? "<" : null;
+                callbacks.printOutput("[DEBUG-CONTEXT-SECURITY] HTML context check: " + result);
+                return result;
                 
             case CONTEXT_IN_ATTRIBUTE_Q:
-                return reflectedPayload.contains("'") ? "'" : null;
+                result = reflectedPayload.contains("'") ? "'" : null;
+                callbacks.printOutput("[DEBUG-CONTEXT-SECURITY] Single quote attribute check: " + result);
+                return result;
                 
             case CONTEXT_IN_ATTRIBUTE_DQ:
-                return reflectedPayload.contains("\"") ? "\"" : null;
+                result = reflectedPayload.contains("\"") ? "\"" : null;
+                callbacks.printOutput("[DEBUG-CONTEXT-SECURITY] Double quote attribute check: " + result);
+                return result;
                 
             case CONTEXT_IN_ATTRIBUTE_BT:
-                return reflectedPayload.contains("`") ? "`" : null;
+                result = reflectedPayload.contains("`") ? "`" : null;
+                callbacks.printOutput("[DEBUG-CONTEXT-SECURITY] Backtick attribute check: " + result);
+                return result;
                 
             case CONTEXT_IN_SCRIPT_TAG_STRING_Q:
-                return reflectedPayload.contains("'") ? "'" : null;
+                result = reflectedPayload.contains("'") ? "'" : null;
+                callbacks.printOutput("[DEBUG-CONTEXT-SECURITY] Single quote script check: " + result);
+                return result;
                 
             case CONTEXT_IN_SCRIPT_TAG_STRING_DQ:
-                return reflectedPayload.contains("\"") ? "\"" : null;
+                result = reflectedPayload.contains("\"") ? "\"" : null;
+                callbacks.printOutput("[DEBUG-CONTEXT-SECURITY] Double quote script check: " + result);
+                return result;
                 
             case CONTEXT_IN_SCRIPT_TAG_STRING_BT:
-                return reflectedPayload.contains("`") ? "`" : null;
+                result = reflectedPayload.contains("`") ? "`" : null;
+                callbacks.printOutput("[DEBUG-CONTEXT-SECURITY] Backtick script check: " + result);
+                return result;
                 
             // For contexts that can accept any character
             case CONTEXT_IN_TAG:

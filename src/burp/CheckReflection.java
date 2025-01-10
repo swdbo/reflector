@@ -622,19 +622,12 @@ public class CheckReflection {
     }
 
     private String checkWhereReflectionPlaced(List<int[]> listOfMatches) {
-        String reflectIn = "";
-        for(int[] matches : listOfMatches){
-            if(matches[0] >= bodyOffset)
-                if(reflectIn.equals(HEADERS))
-                    return BOTH;
-                else
-                    reflectIn = BODY;
-            else if(reflectIn.equals(BODY))
-                    return BOTH;
-                else
-                    reflectIn = HEADERS;
+        for(int[] matches : listOfMatches) {
+            if(matches[0] >= bodyOffset) {
+                return BODY;
+            }
         }
-        return reflectIn;
+        return "";
     }
 
     private List<int[]> getMatches(byte[] response, byte[] match) {
@@ -717,10 +710,20 @@ class Aggressive
             callbacks.printOutput("[DEBUG] Test request prepared: " + testRequest.length() + " bytes");
             symbols = checkResponse(testRequest, param, reflectedSpecialChars);
             
+            callbacks.printOutput("[DEBUG-CONTEXT] Parameter: " + paramName);
+            callbacks.printOutput("[DEBUG-CONTEXT] Type: " + paramType);
+            callbacks.printOutput("[DEBUG-CONTEXT] Reflected special chars: " + reflectedSpecialChars);
+            callbacks.printOutput("[DEBUG-CONTEXT] Context symbols result: " + symbols);
+            callbacks.printOutput("[DEBUG-CONTEXT] Reflected in: " + param.get(REFLECTED_IN));
+            
+            // Always add reflected special chars if we found any
+            if (!reflectedSpecialChars.isEmpty()) {
+                param.put("reflectedSpecialChars", new ArrayList<>(reflectedSpecialChars));
+            }
+            
             if (!symbols.equals("")) {
                 callbacks.printOutput("[SPECIAL CHARS] " + paramType + " '" + paramName + "' is vulnerable to: " + symbols);
                 param.put(VULNERABLE, symbols + "\n");
-                param.put("reflectedSpecialChars", new ArrayList<>(reflectedSpecialChars));
             } else {
                 callbacks.printOutput("[SPECIAL CHARS] No special character vulnerabilities found for " + paramType + " '" + paramName + "'");
             }
@@ -868,7 +871,7 @@ class Aggressive
                     
                     // Check if the special character was actually reflected (not filtered/modified)
                     if (between.equals(String.valueOf(c))) {
-                        callbacks.printOutput("[DEBUG-PAYLOAD] Character '" + c + "' was successfully reflected");
+                        callbacks.printOutput("[DEBUG-PAYLOAD] Character '" + c + "' was successfully reflected for " + parameter.get(NAME));
                         payloadIndexes.add(new int[]{matcher.start() - bodyOffset, matcher.end() - bodyOffset});
                         charReflected = true;
                     } else {
@@ -908,12 +911,35 @@ class Aggressive
             if (settings.getCheckContext() && bodyOffset != response.length()) {
                 // Only do context analysis if we actually found reflected special chars
                 if (!reflectedSpecialChars.isEmpty()) {
+                    // Get parameter info from the Map
+                    String paramName = (String) param.get(NAME);
+                    
+                    // Add debug logging for context analysis
+                    callbacks.printOutput("[DEBUG-CONTEXT-DETAIL] Starting context analysis for " + 
+                        "" + " '" + paramName + "'");
+                    callbacks.printOutput("[DEBUG-CONTEXT-DETAIL] Special chars found for " + 
+                        paramName + ": " + reflectedSpecialChars);
+                    
                     // Combine all payload indexes for context analysis
                     ArrayList<int[]> allIndexes = new ArrayList<>();
                     reflectionMap.values().forEach(allIndexes::addAll);
                     
-                    ContextAnalyzer contextAnalyzer = new ContextAnalyzer(response.substring(bodyOffset).toLowerCase(), allIndexes);
+                    String htmlContent = response.substring(bodyOffset).toLowerCase();
+                    callbacks.printOutput("[DEBUG-CONTEXT-DETAIL] HTML Content length for " + 
+                        paramName + ": " + htmlContent.length());
+                    callbacks.printOutput("[DEBUG-CONTEXT-DETAIL] First reflection position for " + 
+                        paramName + ": " + (allIndexes.isEmpty() ? "none" : allIndexes.get(0)[0]));
+                    callbacks.printOutput("[DEBUG-CONTEXT-DETAIL] HTML Content around reflection:\n" + 
+                        htmlContent.substring(
+                            Math.max(0, allIndexes.get(0)[0] - 50), 
+                            Math.min(htmlContent.length(), allIndexes.get(0)[0] + 50)
+                        ));
+                    
+                    ContextAnalyzer contextAnalyzer = new ContextAnalyzer(htmlContent, allIndexes, callbacks);
                     String contextResults = contextAnalyzer.getIssuesForAllParameters();
+                    
+                    callbacks.printOutput("[DEBUG-CONTEXT-DETAIL] Raw context results for " + 
+                        paramName + ": " + contextResults);
                     
                     // Only include HTML context message if '<' was actually reflected
                     if (reflectedSpecialChars.contains("<")) {

@@ -529,10 +529,17 @@ public class BurpExtender implements IBurpExtender, IScannerCheck, ITab, IContex
             result.append(vulnerableChars.replace(" | ", "<br>"));
             
             // Context checking logic
-            if (settings.getCheckContext() && !vulnerableChars.contains(CONTEXT_VULN_FLAG)) {
-                return result.append("</li>").toString();
+            if (settings.getCheckContext()) {
+                if (!vulnerableChars.contains(CONTEXT_VULN_FLAG)) {
+                    // Still show the reflection but mark as potentially interesting
+                    result.append("<br>Note: Characters reflected but no exploitable context found");
+                } else {
+                    issueName = XSS_VULNERABLE;
+                }
+            } else {
+                // When context checking is disabled, treat all reflections as potentially interesting
+                issueName = XSS_VULNERABLE;
             }
-            issueName = XSS_VULNERABLE;
         }
         
         return result.append("</li>").toString();
@@ -627,31 +634,17 @@ public class BurpExtender implements IBurpExtender, IScannerCheck, ITab, IContex
 
         // Build the issue
         String reflectedInBody = "";
-        String reflectedInHeader = "";
-        String reflectedInAll = "";
         List<int[]> matches = new ArrayList<>();
         List<Pair> pairs = new ArrayList<>();
-        
-        for(Map param: reflections) {
-            // Update parameter history table
-            String paramName = (String)param.get(NAME);
-            String paramType = getParameterTypeDescription(param.get(TYPE) instanceof Byte ? 
-                ((Byte)param.get(TYPE)).intValue() : 
-                (Integer)param.get(TYPE));
-            String paramValue = (String)param.get(VALUE);
-            List<int[]> paramMatches = (List<int[]>)param.get(MATCHES);
-            parameterModel.updateParameter(paramName, paramType, paramValue, url, paramMatches);
 
+        for(Map param: reflections) {
+            // Skip if not reflected in body
+            if(!param.get(REFLECTED_IN).equals(BODY)) {
+                continue;
+            }
+            
             // Build reflection summary
-            if(param.get(REFLECTED_IN).equals(BODY)){
-                reflectedInBody += buildIssueForReflection(param, baseRequestResponse);
-            }
-            if(param.get(REFLECTED_IN).equals(HEADERS)){
-                reflectedInHeader += buildIssueForReflection(param, baseRequestResponse);
-            }
-            if(param.get(REFLECTED_IN).equals(BOTH)){
-                reflectedInAll += buildIssueForReflection(param, baseRequestResponse);
-            }
+            reflectedInBody += buildIssueForReflection(param, baseRequestResponse);
             
             for (Object pair : (ArrayList)param.get(MATCHES)) {
                 pairs.add(new Pair((int[]) pair));
@@ -662,12 +655,9 @@ public class BurpExtender implements IBurpExtender, IScannerCheck, ITab, IContex
         String START = ":<br><ul>";
         String END = "</ul>";
         String reflectedSummary = "";
-        if(!reflectedInHeader.equals(""))
-            reflectedSummary += DESCRIPTION_DETAILS + HEADERS + START + reflectedInHeader + END;
-        if(!reflectedInBody.equals(""))
+        if(!reflectedInBody.equals("")) {
             reflectedSummary += DESCRIPTION_DETAILS + BODY + START + reflectedInBody + END;
-        if(!reflectedInAll.equals(""))
-            reflectedSummary += DESCRIPTION_DETAILS + BOTH + START + reflectedInAll + END;
+        }
 
         // Sort and merge matches
         Collections.sort(pairs, (o1, o2) -> {
