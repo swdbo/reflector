@@ -796,13 +796,25 @@ class Aggressive
             bodyOffset = helpers.analyzeResponse(response.getBytes()).getBodyOffset();
             
             if (settings.getCheckContext() && bodyOffset != response.length()) {
-                // Combine all payload indexes for context analysis
-                ArrayList<int[]> allIndexes = new ArrayList<>();
-                reflectionMap.values().forEach(allIndexes::addAll);
-                
-                ContextAnalyzer contextAnalyzer = new ContextAnalyzer(response.substring(bodyOffset).toLowerCase(), allIndexes);
-                symbols = contextAnalyzer.getIssuesForAllParameters();
-                callbacks.printOutput("[DEBUG-PAYLOAD] Context analysis results: " + symbols);
+                // Only do context analysis if we actually found reflected special chars
+                if (!reflectedSpecialChars.isEmpty()) {
+                    // Combine all payload indexes for context analysis
+                    ArrayList<int[]> allIndexes = new ArrayList<>();
+                    reflectionMap.values().forEach(allIndexes::addAll);
+                    
+                    ContextAnalyzer contextAnalyzer = new ContextAnalyzer(response.substring(bodyOffset).toLowerCase(), allIndexes);
+                    String contextResults = contextAnalyzer.getIssuesForAllParameters();
+                    
+                    // Only include HTML context message if '<' was actually reflected
+                    if (reflectedSpecialChars.contains("<")) {
+                        symbols = contextResults;
+                    } else {
+                        // Remove HTML context message if '<' wasn't reflected
+                        symbols = contextResults.replaceAll("HTML context \\(breaks out with <\\)", "").trim();
+                    }
+                    callbacks.printOutput("[DEBUG-PAYLOAD] Context analysis results: " + symbols);
+                    callbacks.printOutput("[DEBUG-PAYLOAD] Reflected special chars: " + String.join(", ", reflectedSpecialChars));
+                }
             } else if(bodyOffset != 1) {
                 symbols = "";
                 for (Map.Entry<String, ArrayList<int[]>> entry : reflectionMap.entrySet()) {

@@ -135,21 +135,40 @@ class ContextAnalyzer
         for (String[] group : contextGroups) {
             for (String context : group) {
                 if (contextFindings.containsKey(context)) {
-                    // For contexts that already include their special char in the name (like "HTML: <"),
-                    // we don't need to append the char again
-                    if (context.equals(CONTEXT_OUT_OF_TAG) || 
-                        context.equals(CONTEXT_IN_ATTRIBUTE_Q) ||
-                        context.equals(CONTEXT_IN_ATTRIBUTE_DQ) ||
-                        context.equals(CONTEXT_IN_ATTRIBUTE_BT) ||
-                        context.equals(CONTEXT_IN_SCRIPT_TAG_STRING_Q) ||
-                        context.equals(CONTEXT_IN_SCRIPT_TAG_STRING_DQ) ||
-                        context.equals(CONTEXT_IN_SCRIPT_TAG_STRING_BT)) {
-                        result.append(context);
-                    } else {
+                    Set<String> chars = contextFindings.get(context);
+                    // Only include context if relevant special chars were found
+                    if (context.equals(CONTEXT_OUT_OF_TAG)) {
+                        if (chars.contains("<")) {
+                            result.append("HTML context (breaks out with <)");
+                        }
+                    } else if (context.equals(CONTEXT_IN_ATTRIBUTE_Q)) {
+                        if (chars.contains("'")) {
+                            result.append(context);
+                        }
+                    } else if (context.equals(CONTEXT_IN_ATTRIBUTE_DQ)) {
+                        if (chars.contains("\"")) {
+                            result.append(context);
+                        }
+                    } else if (context.equals(CONTEXT_IN_ATTRIBUTE_BT)) {
+                        if (chars.contains("`")) {
+                            result.append(context);
+                        }
+                    } else if (context.equals(CONTEXT_IN_SCRIPT_TAG_STRING_Q)) {
+                        if (chars.contains("'")) {
+                            result.append(context);
+                        }
+                    } else if (context.equals(CONTEXT_IN_SCRIPT_TAG_STRING_DQ)) {
+                        if (chars.contains("\"")) {
+                            result.append(context);
+                        }
+                    } else if (context.equals(CONTEXT_IN_SCRIPT_TAG_STRING_BT)) {
+                        if (chars.contains("`")) {
+                            result.append(context);
+                        }
+                    } else if (!chars.isEmpty()) {
                         // For other contexts, append the found chars
                         result.append(context);
-                        Set<String> chars = contextFindings.get(context);
-                        if (!chars.isEmpty() && !chars.contains("ALL")) {
+                        if (!chars.contains("ALL")) {
                             result.append(" (found: ").append(String.join(" ", chars)).append(")");
                         }
                     }
