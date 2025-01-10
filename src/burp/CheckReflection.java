@@ -2,6 +2,7 @@ package burp;
 
 import java.io.IOException;
 import java.io.PrintWriter;
+import java.net.URL;
 import java.security.KeyManagementException;
 import java.security.KeyStoreException;
 import java.security.NoSuchAlgorithmException;
@@ -218,84 +219,126 @@ public class CheckReflection {
             // Skip common headers that shouldn't be tested
             if (shouldSkipHeader(headerName)) continue;
             
-            // callbacks.printOutput(String.format("[HEADER CHECK] Testing %s header '%s' with value: %s",
-            //     (isRequest ? "request" : "response"),
-            //     headerName,
-            //     headerValue));
+            callbacks.printOutput(String.format("[HEADER CHECK] Testing %s header '%s' with value: %s",
+                (isRequest ? "request" : "response"),
+                headerName,
+                headerValue));
             
             byte[] bytesOfHeaderValue = headerValue.getBytes();
             if (bytesOfHeaderValue.length > 2) {
-                // For response headers, only check reflections in the response body
-                List<int[]> originalMatches;
-                if (!isRequest) {
-                    // Get response body
-                    byte[] response = iHttpRequestResponse.getResponse();
-                    int bodyOffset = helpers.analyzeResponse(response).getBodyOffset();
-                    byte[] bodyBytes = Arrays.copyOfRange(response, bodyOffset, response.length);
-                    originalMatches = getMatches(bodyBytes, bytesOfHeaderValue);
-                } else {
-                    // For request headers, check entire response
-                    originalMatches = getMatches(iHttpRequestResponse.getResponse(), bytesOfHeaderValue);
-                }
-                
-                if (!originalMatches.isEmpty()) {
-                    callbacks.printOutput(String.format("[BASIC REFLECTION] %s header '%s' appears to be reflected",
-                        isRequest ? "Request" : "Response",
-                        headerName));
-                    
-                    String canaryValue = generateCanaryValue();
-                    callbacks.printOutput(String.format("[CANARY TESTING] Testing %s header '%s' with value: %s",
-                        isRequest ? "request" : "response",
-                        headerName,
-                        canaryValue));
-                    
-                    // Create modified request with canary value
-                    List<String> modifiedHeaders = new ArrayList<>(headers);
-                    for (int j = 0; j < modifiedHeaders.size(); j++) {
-                        if (modifiedHeaders.get(j).startsWith(headerName + ":")) {
-                            modifiedHeaders.set(j, headerName + ": " + canaryValue);
-                            break;
+                // For request headers, check for reflections in response
+                if (isRequest) {
+                    List<int[]> originalMatches = getMatches(iHttpRequestResponse.getResponse(), bytesOfHeaderValue);
+                    if (!originalMatches.isEmpty()) {
+                        callbacks.printOutput(String.format("[BASIC REFLECTION] Request header '%s' appears to be reflected", headerName));
+                        
+                        String canaryValue = generateCanaryValue();
+                        callbacks.printOutput(String.format("[CANARY TESTING] Testing request header '%s' with value: %s",
+                            headerName,
+                            canaryValue));
+                        
+                        // Create modified request with canary value
+                        List<String> modifiedHeaders = new ArrayList<>(headers);
+                        for (int j = 0; j < modifiedHeaders.size(); j++) {
+                            if (modifiedHeaders.get(j).startsWith(headerName + ":")) {
+                                modifiedHeaders.set(j, headerName + ": " + canaryValue);
+                                break;
+                            }
+                        }
+                        
+                        byte[] canaryRequest = helpers.buildHttpMessage(modifiedHeaders, Arrays.copyOfRange(
+                            iHttpRequestResponse.getRequest(),
+                            helpers.analyzeRequest(iHttpRequestResponse.getRequest()).getBodyOffset(),
+                            iHttpRequestResponse.getRequest().length));
+                        
+                        IHttpRequestResponse canaryResp = callbacks.makeHttpRequest(
+                            iHttpRequestResponse.getHttpService(),
+                            canaryRequest);
+                        
+                        List<int[]> canaryMatches = getMatches(canaryResp.getResponse(), canaryValue.getBytes());
+                        if (!canaryMatches.isEmpty()) {
+                            callbacks.printOutput("[DEBUG] Found canary matches:");
+                            for (int[] match : canaryMatches) {
+                                callbacks.printOutput(String.format("[DEBUG] Match at positions %d-%d: %s", 
+                                    match[0], 
+                                    match[1],
+                                    helpers.bytesToString(Arrays.copyOfRange(canaryResp.getResponse(), match[0], match[1]))));
+                            }
+                            
+                            // Create parameter description map
+                            Map<String, Object> headerDescription = new HashMap<>();
+                            headerDescription.put(NAME, headerName);
+                            headerDescription.put(VALUE, headerValue);
+                            headerDescription.put(TYPE, Integer.valueOf(Constants.REQUEST_HEADER));
+                            headerDescription.put(MATCHES, originalMatches);
+                            headerDescription.put(REFLECTED_IN, checkWhereReflectionPlaced(originalMatches));
+                            
+                            // Add header position information
+                            String headerLine = headerName + ": " + headerValue;
+                            int headerStart = helpers.bytesToString(request).indexOf(headerLine);
+                            if (headerStart != -1) {
+                                int valueStart = headerStart + headerName.length() + 2; // +2 for ": "
+                                headerDescription.put(VALUE_START, valueStart);
+                                headerDescription.put(VALUE_END, valueStart + headerValue.length());
+                            }
+                            
+                            reflectedParameters.add(headerDescription);
+                            callbacks.printOutput("[CANARY CONFIRMED] Request header '" + headerName + "' reflection verified");
+                        } else {
+                            callbacks.printOutput("[CANARY FAILED] Request header '" + headerName + "' reflection could not be verified");
                         }
                     }
+                }
+                // For response headers, only test them as request headers
+                List<int[]> requestHeaderMatches = new ArrayList<>();
+                if (!isRequest) {
+                    callbacks.printOutput(String.format("[HEADER CHECK] Testing response header '%s' as request header", headerName));
                     
-                    byte[] canaryRequest = helpers.buildHttpMessage(modifiedHeaders, Arrays.copyOfRange(
+                    // Create a new request with the response header added as a request header
+                    List<String> requestHeaders = helpers.analyzeRequest(iHttpRequestResponse.getRequest()).getHeaders();
+                    List<String> newHeaders = new ArrayList<>(requestHeaders);
+                    newHeaders.add(headerName + ": " + headerValue);
+                    
+                    byte[] body = Arrays.copyOfRange(
                         iHttpRequestResponse.getRequest(),
                         helpers.analyzeRequest(iHttpRequestResponse.getRequest()).getBodyOffset(),
-                        iHttpRequestResponse.getRequest().length));
+                        iHttpRequestResponse.getRequest().length);
                     
-                    IHttpRequestResponse canaryResp = callbacks.makeHttpRequest(
+                    byte[] newRequest = helpers.buildHttpMessage(newHeaders, body);
+                    
+                    // Send request and check for reflections
+                    IHttpRequestResponse testResponse = callbacks.makeHttpRequest(
                         iHttpRequestResponse.getHttpService(),
-                        canaryRequest);
+                        newRequest);
                     
-                    List<int[]> canaryMatches;
-                    if (!isRequest) {
-                        byte[] canaryRespBody = Arrays.copyOfRange(
-                            canaryResp.getResponse(),
-                            helpers.analyzeResponse(canaryResp.getResponse()).getBodyOffset(),
-                            canaryResp.getResponse().length);
-                        canaryMatches = getMatches(canaryRespBody, canaryValue.getBytes());
-                    } else {
-                        canaryMatches = getMatches(canaryResp.getResponse(), canaryValue.getBytes());
-                    }
+                    // Log the full response for debugging
+                    callbacks.printOutput("[DEBUG] Full response when testing as request header:");
+                    callbacks.printOutput(helpers.bytesToString(testResponse.getResponse()));
                     
-                    if (!canaryMatches.isEmpty()) {
-                        callbacks.printOutput(String.format("[CANARY CONFIRMED] %s header '%s' reflection verified",
-                            isRequest ? "Request" : "Response",
-                            headerName));
+                    requestHeaderMatches = getMatches(testResponse.getResponse(), bytesOfHeaderValue);
+                    callbacks.printOutput(String.format("[DEBUG] Found %d matches when testing as request header", requestHeaderMatches.size()));
+                    
+                    if (!requestHeaderMatches.isEmpty()) {
+                        callbacks.printOutput("[DEBUG] Match positions:");
+                        for (int[] match : requestHeaderMatches) {
+                            callbacks.printOutput(String.format("[DEBUG] Match at positions %d-%d: %s", 
+                                match[0], 
+                                match[1],
+                                helpers.bytesToString(Arrays.copyOfRange(testResponse.getResponse(), match[0], match[1]))));
+                        }
+                        callbacks.printOutput(String.format("[HEADER CHECK] Response header '%s' reflected when used as request header", headerName));
                         
                         // Create parameter description map with proper TYPE field
                         Map<String, Object> headerDescription = new HashMap<>();
                         headerDescription.put(NAME, headerName);
                         headerDescription.put(VALUE, headerValue);
-                        headerDescription.put(TYPE, Integer.valueOf(isRequest ? Constants.REQUEST_HEADER : Constants.RESPONSE_HEADER));
-                        headerDescription.put(MATCHES, originalMatches);
-                        headerDescription.put(REFLECTED_IN, checkWhereReflectionPlaced(originalMatches));
+                        headerDescription.put(TYPE, Integer.valueOf(Constants.REQUEST_HEADER)); // Use REQUEST_HEADER type since we're testing it as a request header
+                        headerDescription.put(MATCHES, requestHeaderMatches);
+                        headerDescription.put(REFLECTED_IN, checkWhereReflectionPlaced(requestHeaderMatches));
                         
                         // Add header position information
-                        byte[] fullMessage = isRequest ? request : iHttpRequestResponse.getResponse();
-                        String fullMessageStr = helpers.bytesToString(fullMessage);
                         String headerLine = headerName + ": " + headerValue;
-                        int headerStart = fullMessageStr.indexOf(headerLine);
+                        int headerStart = helpers.bytesToString(newRequest).indexOf(headerLine);
                         if (headerStart != -1) {
                             int valueStart = headerStart + headerName.length() + 2; // +2 for ": "
                             headerDescription.put(VALUE_START, valueStart);
@@ -303,8 +346,69 @@ public class CheckReflection {
                         }
                         
                         reflectedParameters.add(headerDescription);
+                        continue; // Skip original response header check since we found it as request header
+                    }
+                }
+                
+                // For response headers, do canary testing if initial test found reflections
+                if (!isRequest && !requestHeaderMatches.isEmpty()) {
+                    // For response headers, verify canary when used as request header
+                    String canaryValue = generateCanaryValue();
+                    callbacks.printOutput(String.format("[CANARY TESTING] Testing response header '%s' as request header with value: %s",
+                        headerName,
+                        canaryValue));
+                    
+                    List<String> canaryRequestHeaders = helpers.analyzeRequest(iHttpRequestResponse.getRequest()).getHeaders();
+                    List<String> newCanaryHeaders = new ArrayList<>(canaryRequestHeaders);
+                    newCanaryHeaders.add(headerName + ": " + canaryValue);
+                    
+                    byte[] canaryBody = Arrays.copyOfRange(
+                        iHttpRequestResponse.getRequest(),
+                        helpers.analyzeRequest(iHttpRequestResponse.getRequest()).getBodyOffset(),
+                        iHttpRequestResponse.getRequest().length);
+                    
+                    byte[] newCanaryRequest = helpers.buildHttpMessage(newCanaryHeaders, canaryBody);
+                    IHttpRequestResponse canaryHeaderResp = callbacks.makeHttpRequest(
+                        iHttpRequestResponse.getHttpService(),
+                        newCanaryRequest);
+                    
+                    // Log full request and response for debugging
+                    callbacks.printOutput("[DEBUG] Canary request:");
+                    callbacks.printOutput(helpers.bytesToString(newCanaryRequest));
+                    callbacks.printOutput("[DEBUG] Canary response:");
+                    callbacks.printOutput(helpers.bytesToString(canaryHeaderResp.getResponse()));
+                    
+                    List<int[]> canaryMatches = getMatches(canaryHeaderResp.getResponse(), canaryValue.getBytes());
+                    if (!canaryMatches.isEmpty()) {
+                        callbacks.printOutput("[DEBUG] Found canary matches when used as request header:");
+                        for (int[] match : canaryMatches) {
+                            callbacks.printOutput(String.format("[DEBUG] Match at positions %d-%d: %s", 
+                                match[0], 
+                                match[1],
+                                helpers.bytesToString(Arrays.copyOfRange(canaryHeaderResp.getResponse(), match[0], match[1]))));
+                        }
+                        
+                        // Create parameter description map with proper TYPE field
+                        Map<String, Object> headerDescription = new HashMap<>();
+                        headerDescription.put(NAME, headerName);
+                        headerDescription.put(VALUE, headerValue);
+                        headerDescription.put(TYPE, Integer.valueOf(Constants.REQUEST_HEADER)); // Use REQUEST_HEADER type since we're testing it as a request header
+                        headerDescription.put(MATCHES, canaryMatches);
+                        headerDescription.put(REFLECTED_IN, checkWhereReflectionPlaced(canaryMatches));
+                        
+                        // Add header position information
+                        String headerLine = headerName + ": " + headerValue;
+                        int headerStart = helpers.bytesToString(newCanaryRequest).indexOf(headerLine);
+                        if (headerStart != -1) {
+                            int valueStart = headerStart + headerName.length() + 2; // +2 for ": "
+                            headerDescription.put(VALUE_START, valueStart);
+                            headerDescription.put(VALUE_END, valueStart + headerValue.length());
+                        }
+                        
+                        reflectedParameters.add(headerDescription);
+                        callbacks.printOutput("[CANARY CONFIRMED] Response header '" + headerName + "' reflection verified when used as request header");
                     } else {
-                        callbacks.printOutput("[CANARY FAILED] Header '" + headerName + "' reflection could not be verified");
+                        callbacks.printOutput("[CANARY FAILED] Response header '" + headerName + "' reflection could not be verified");
                     }
                 }
             }
