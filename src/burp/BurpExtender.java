@@ -608,7 +608,7 @@ public class BurpExtender implements IBurpExtender, IScannerCheck, ITab, IContex
             // Generate unique values for each header
             for (int i = 0; i < headerListModel.getSize(); i++) {
                 String headerName = headerListModel.getElementAt(i);
-                String headerValue = "BURP-TEST-" + headerName + "-VALUE-" + UUID.randomUUID().toString().substring(0, 8);
+                String headerValue = "TEST-" + headerName + "-" + UUID.randomUUID().toString().substring(0, 8);
                 newHeaders.add(headerName + ": " + headerValue);
             }
             

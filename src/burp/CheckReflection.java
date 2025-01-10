@@ -569,8 +569,6 @@ class Aggressive
     private static final String PAYLOAD_JSON = "<\\\"'`";
     private Pattern pattern;
     private Settings settings;
-    private List<String> reflectedSpecialChars;
-
     Aggressive(Settings settings, IExtensionHelpers helpers, IHttpRequestResponse baseRequestResponse, IBurpExtenderCallbacks callbacks, List<Map> reflectedParameters) {
         this.helpers = helpers;
         this.callbacks = callbacks;
@@ -583,7 +581,6 @@ class Aggressive
         // // OLD ONE KEEP FOR NOW
         // this.pattern = Pattern.compile(PAYLOAD_GREP + "([_%&;<\"'`#\\\\0-9a-z]{1,15}?)" + PAYLOAD_GREP);
         this.settings = settings;
-        this.reflectedSpecialChars = new ArrayList<>();
     }
 
     public List<Map> scanReflectedParameters(){
@@ -595,6 +592,9 @@ class Aggressive
             String paramName = (String)param.get(NAME);
             String paramType = getTypeString(((Integer)param.get(TYPE)).byteValue());
             callbacks.printOutput("[SPECIAL CHARS] Testing " + paramType + " '" + paramName + "' at " + url);
+            // Reset reflected special chars for each parameter
+            List<String> reflectedSpecialChars = new ArrayList<>();
+            
             callbacks.printOutput("[DEBUG] Parameter details:");
             callbacks.printOutput("[DEBUG] - Type: " + paramType);
             callbacks.printOutput("[DEBUG] - Value: " + param.get(VALUE));
@@ -611,7 +611,7 @@ class Aggressive
             callbacks.printOutput("[DEBUG] Preparing test request for parameter: " + paramName);
             testRequest = prepareRequest(param);
             callbacks.printOutput("[DEBUG] Test request prepared: " + testRequest.length() + " bytes");
-            symbols = checkResponse(testRequest, param);
+            symbols = checkResponse(testRequest, param, reflectedSpecialChars);
             
             if (!symbols.equals("")) {
                 callbacks.printOutput("[SPECIAL CHARS] " + paramType + " '" + paramName + "' is vulnerable to: " + symbols);
@@ -647,7 +647,7 @@ class Aggressive
         return value.replaceAll("[^<\"'`\\\\]", "").replaceAll("(\\\\\"|\\\\')", "").replaceAll("[\\\\]", "");
     }
 
-    private String checkResponse(String testRequest, Map param) {
+    private String checkResponse(String testRequest, Map param, List<String> reflectedSpecialChars) {
         String reflectedPayloadValue = "",
                 symbols = "";
         int bodyOffset = -1;
@@ -744,83 +744,44 @@ class Aggressive
                 }
 
                 // Look for reflection of this specific character
-                Pattern singleCharPattern = Pattern.compile(PAYLOAD_GREP + c + PAYLOAD_GREP);
+                Pattern singleCharPattern = Pattern.compile(PAYLOAD_GREP + "([^" + PAYLOAD_GREP + "]*)" + PAYLOAD_GREP);
                 Matcher matcher = singleCharPattern.matcher(response);
                 ArrayList<int[]> payloadIndexes = new ArrayList<>();
+                boolean charReflected = false;
                 
-                if (!matcher.find()) {
-                    // If no match found, try to find the payload marker to see what happened
-                    Pattern markerPattern = Pattern.compile(PAYLOAD_GREP + "[^" + PAYLOAD_GREP + "]{0,20}" + PAYLOAD_GREP);
-                    Matcher markerMatcher = markerPattern.matcher(response);
-                    
-                    if (!markerMatcher.find()) {
-                        // If no markers found at all, search for individual markers
-                        Pattern singleMarkerPattern = Pattern.compile(PAYLOAD_GREP);
-                        Matcher singleMarkerMatcher = singleMarkerPattern.matcher(response);
-                        
-                        callbacks.printOutput("[DEBUG-PAYLOAD] No reflection found for character: " + c);
-                        callbacks.printOutput("[DEBUG-PAYLOAD] Expected: " + PAYLOAD_GREP + c + PAYLOAD_GREP);
-                        
-                        while (singleMarkerMatcher.find()) {
-                            int contextStart = Math.max(0, singleMarkerMatcher.start() - 20);
-                            int contextEnd = Math.min(response.length(), singleMarkerMatcher.end() + 20);
-                            String context = response.substring(contextStart, contextEnd);
-                            
-                            callbacks.printOutput("[DEBUG-PAYLOAD] Found isolated marker at position " + singleMarkerMatcher.start());
-                            callbacks.printOutput("[DEBUG-PAYLOAD] Context: ..." + context + "...");
-                            callbacks.printOutput("[DEBUG-PAYLOAD] Bytes: " + Arrays.toString(context.getBytes()));
-                        }
-                    } else {
-                        // Reset and find all marker pairs
-                        markerMatcher.reset();
-                        while (markerMatcher.find()) {
-                            String matchedContent = markerMatcher.group();
-                            // Get some context around the match
-                            int contextStart = Math.max(0, markerMatcher.start() - 20);
-                            int contextEnd = Math.min(response.length(), markerMatcher.end() + 20);
-                            String context = response.substring(contextStart, contextEnd);
-                            
-                            callbacks.printOutput("[DEBUG-PAYLOAD] Found markers but character modified:");
-                            callbacks.printOutput("[DEBUG-PAYLOAD] Content between markers: " + matchedContent);
-                            callbacks.printOutput("[DEBUG-PAYLOAD] Context: ..." + context + "...");
-                            callbacks.printOutput("[DEBUG-PAYLOAD] Expected: " + PAYLOAD_GREP + c + PAYLOAD_GREP);
-                            callbacks.printOutput("[DEBUG-PAYLOAD] Actual bytes: " + Arrays.toString(matchedContent.getBytes()));
-                            
-                            // Try to identify what happened to the character
-                            String between = matchedContent.substring(PAYLOAD_GREP.length(), matchedContent.length() - PAYLOAD_GREP.length());
-                            if (between.isEmpty()) {
-                                callbacks.printOutput("[DEBUG-PAYLOAD] Character was removed");
-                            } else if (between.length() > 1) {
-                                callbacks.printOutput("[DEBUG-PAYLOAD] Character was encoded/expanded: " + between);
-                            } else if (between.charAt(0) != c) {
-                                callbacks.printOutput("[DEBUG-PAYLOAD] Character was changed from '" + c + "' to '" + between + "'");
-                            }
-                        }
-                    }
-                }
-                
-                // Reset matcher to start
-                matcher.reset();
                 while (matcher.find()) {
                     String matchedContent = matcher.group();
+                    String between = matchedContent.substring(PAYLOAD_GREP.length(), matchedContent.length() - PAYLOAD_GREP.length());
+                    
                     // Get some context around the match
                     int contextStart = Math.max(0, matcher.start() - 20);
                     int contextEnd = Math.min(response.length(), matcher.end() + 20);
                     String context = response.substring(contextStart, contextEnd);
                     
                     callbacks.printOutput("[DEBUG-PAYLOAD] Found match: " + matchedContent);
+                    callbacks.printOutput("[DEBUG-PAYLOAD] Content between markers: " + between);
                     callbacks.printOutput("[DEBUG-PAYLOAD] Context: ..." + context + "...");
-                    callbacks.printOutput("[DEBUG-PAYLOAD] Match bytes: " + Arrays.toString(matchedContent.getBytes()));
-                    payloadIndexes.add(new int[]{matcher.start() - bodyOffset, matcher.end() - bodyOffset});
                     
-                    // Track any special character that is found in a match
-                    if (!reflectedSpecialChars.contains(String.valueOf(c))) {
-                        reflectedSpecialChars.add(String.valueOf(c));
-                        callbacks.printOutput("[DEBUG-PAYLOAD-FOUND] Added special char to tracking: " + c);
+                    // Check if the special character was actually reflected (not filtered/modified)
+                    if (between.equals(String.valueOf(c))) {
+                        callbacks.printOutput("[DEBUG-PAYLOAD] Character '" + c + "' was successfully reflected");
+                        payloadIndexes.add(new int[]{matcher.start() - bodyOffset, matcher.end() - bodyOffset});
+                        charReflected = true;
+                    } else {
+                        if (between.isEmpty()) {
+                            callbacks.printOutput("[DEBUG-PAYLOAD] Character '" + c + "' was removed by server");
+                        } else if (between.length() > 1) {
+                            callbacks.printOutput("[DEBUG-PAYLOAD] Character '" + c + "' was encoded/expanded to: " + between);
+                        } else {
+                            callbacks.printOutput("[DEBUG-PAYLOAD] Character '" + c + "' was changed to: " + between);
+                        }
                     }
                 }
                 
-                if (!payloadIndexes.isEmpty()) {
+                // Only track special chars that were actually reflected unchanged
+                if (charReflected) {
+                    reflectedSpecialChars.add(String.valueOf(c));
+                    callbacks.printOutput("[DEBUG-PAYLOAD-FOUND] Added special char to tracking: " + c);
                     reflectionMap.put(String.valueOf(c), payloadIndexes);
                 }
             }
