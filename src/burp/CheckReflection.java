@@ -270,9 +270,62 @@ public class CheckReflection {
                 headerValue));
             
             byte[] bytesOfHeaderValue = headerValue.getBytes();
-            if (bytesOfHeaderValue.length > 2) {
-                // For request headers, check for reflections in response
-                if (isRequest) {
+            // For request headers, check for reflections in response
+            if (isRequest) {
+                if (bytesOfHeaderValue.length == 0) {
+                    // For empty header values, consider them reflected and test with canary
+                    String canaryValue = generateCanaryValue();
+                    callbacks.printOutput(String.format("[CANARY TESTING] Testing request header '%s' with empty value using canary: %s",
+                        headerName,
+                        canaryValue));
+                    
+                    // Create modified request with canary value
+                    List<String> modifiedHeaders = new ArrayList<>(headers);
+                    for (int j = 0; j < modifiedHeaders.size(); j++) {
+                        if (modifiedHeaders.get(j).startsWith(headerName + ":")) {
+                            modifiedHeaders.set(j, headerName + ": " + canaryValue);
+                            break;
+                        }
+                    }
+                    
+                    byte[] canaryRequest = helpers.buildHttpMessage(modifiedHeaders, Arrays.copyOfRange(
+                        iHttpRequestResponse.getRequest(),
+                        helpers.analyzeRequest(iHttpRequestResponse.getRequest()).getBodyOffset(),
+                        iHttpRequestResponse.getRequest().length));
+                    
+                    IHttpRequestResponse canaryResp = callbacks.makeHttpRequest(
+                        iHttpRequestResponse.getHttpService(),
+                        canaryRequest);
+                    
+                    List<int[]> canaryMatches = getMatches(canaryResp.getResponse(), canaryValue.getBytes());
+                    if (!canaryMatches.isEmpty()) {
+                        // Only add if reflection is in body
+                        String reflectedIn = checkWhereReflectionPlaced(canaryMatches);
+                        if (!reflectedIn.equals(HEADERS)) {
+                            // Create parameter description map
+                            Map<String, Object> headerDescription = new HashMap<>();
+                            headerDescription.put(NAME, headerName);
+                            headerDescription.put(VALUE, headerValue);
+                            headerDescription.put(TYPE, Integer.valueOf(Constants.REQUEST_HEADER));
+                            headerDescription.put(MATCHES, canaryMatches);
+                            headerDescription.put(REFLECTED_IN, reflectedIn);
+                            
+                            // Add header position information
+                            String headerLine = headerName + ": " + headerValue;
+                            int headerStart = helpers.bytesToString(request).indexOf(headerLine);
+                            if (headerStart != -1) {
+                                int valueStart = headerStart + headerName.length() + 2; // +2 for ": "
+                                headerDescription.put(VALUE_START, valueStart);
+                                headerDescription.put(VALUE_END, valueStart + headerValue.length());
+                            }
+                            
+                            reflectedParameters.add(headerDescription);
+                            callbacks.printOutput("[CANARY CONFIRMED] Empty request header '" + headerName + "' reflection verified in " + reflectedIn);
+                        } else {
+                            callbacks.printOutput("[CANARY CONFIRMED] Skipping empty request header '" + headerName + "' (reflection only in headers)");
+                        }
+                    }
+                } else {
                     List<int[]> originalMatches = getMatches(iHttpRequestResponse.getResponse(), bytesOfHeaderValue);
                     if (!originalMatches.isEmpty()) {
                         callbacks.printOutput(String.format("[BASIC REFLECTION] Request header '%s' appears to be reflected", headerName));
@@ -341,9 +394,60 @@ public class CheckReflection {
                         }
                     }
                 }
-                // For response headers, first test with canary value
-                List<int[]> requestHeaderMatches = new ArrayList<>();
-                if (!isRequest) {
+            }
+            // For response headers
+            List<int[]> requestHeaderMatches = new ArrayList<>();
+            if (!isRequest) {
+                if (bytesOfHeaderValue.length == 0) {
+                    // For empty header values, consider them reflected and test with canary
+                    String canaryValue = generateCanaryValue();
+                    callbacks.printOutput(String.format("[CANARY CHECK] Testing response header '%s' with empty value using canary: %s",
+                        headerName,
+                        canaryValue));
+                    
+                    // Create request with canary value
+                    List<String> canaryHeaders = new ArrayList<>(helpers.analyzeRequest(iHttpRequestResponse.getRequest()).getHeaders());
+                    canaryHeaders.add(headerName + ": " + canaryValue);
+                    
+                    byte[] canaryBody = Arrays.copyOfRange(
+                        iHttpRequestResponse.getRequest(),
+                        helpers.analyzeRequest(iHttpRequestResponse.getRequest()).getBodyOffset(),
+                        iHttpRequestResponse.getRequest().length);
+                    
+                    byte[] canaryRequest = helpers.buildHttpMessage(canaryHeaders, canaryBody);
+                    
+                    // Send canary request and check response
+                    IHttpRequestResponse canaryResponse = callbacks.makeHttpRequest(
+                        iHttpRequestResponse.getHttpService(),
+                        canaryRequest);
+                    
+                    List<int[]> canaryMatches = getMatches(canaryResponse.getResponse(), canaryValue.getBytes());
+                    
+                    if (!canaryMatches.isEmpty()) {
+                        callbacks.printOutput("[CANARY CONFIRMED] Response header reflection verified with canary value");
+                        
+                        // Create parameter description map with proper TYPE field
+                        Map<String, Object> headerDescription = new HashMap<>();
+                        headerDescription.put(NAME, headerName);
+                        headerDescription.put(VALUE, headerValue);
+                        headerDescription.put(TYPE, Integer.valueOf(Constants.REQUEST_HEADER)); // Use REQUEST_HEADER type since we're testing it as a request header
+                        headerDescription.put(MATCHES, canaryMatches);
+                        headerDescription.put(REFLECTED_IN, checkWhereReflectionPlaced(canaryMatches));
+                        
+                        // Add header position information
+                        String headerLine = headerName + ": " + headerValue;
+                        int headerStart = helpers.bytesToString(request).indexOf(headerLine);
+                        if (headerStart != -1) {
+                            int valueStart = headerStart + headerName.length() + 2; // +2 for ": "
+                            headerDescription.put(VALUE_START, valueStart);
+                            headerDescription.put(VALUE_END, valueStart + headerValue.length());
+                        }
+                        
+                        reflectedParameters.add(headerDescription);
+                        callbacks.printOutput("[CANARY CONFIRMED] Empty response header '" + headerName + "' reflection verified");
+                    }
+                } else {
+                    // For non-empty header values, use existing logic
                     // First test with canary value
                     String canaryValue = generateCanaryValue();
                     callbacks.printOutput(String.format("[CANARY CHECK] Testing response header '%s' with canary value: %s", 
