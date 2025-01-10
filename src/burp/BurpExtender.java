@@ -512,29 +512,29 @@ public class BurpExtender implements IBurpExtender, IScannerCheck, ITab, IContex
         StringBuilder result = new StringBuilder("<li>");
         
         // Extract all special characters from the findings
-        Set<String> allChars = new HashSet<>();
-        if (!vulnerableChars.isEmpty()) {
-            callbacks.printOutput("[DEBUG] Processing vulnerable chars: " + vulnerableChars);
+        // Set<String> allChars = new HashSet<>();
+        // if (!vulnerableChars.isEmpty()) {
+            // callbacks.printOutput("[DEBUG] Processing vulnerable chars: " + vulnerableChars);
             
-            for (String context : vulnerableChars.split(" \\| ")) {
-                callbacks.printOutput("[DEBUG] Processing context: " + context);
+            // for (String context : vulnerableChars.split(" \\| ")) {
+            //     callbacks.printOutput("[DEBUG] Processing context: " + context);
                 
-                if (context.contains("(found: ")) {
-                    String chars = context.substring(context.indexOf("found: ") + 7, context.indexOf(")"));
-                    callbacks.printOutput("[DEBUG] Found chars in context: " + chars);
-                    for (String c : chars.split(" ")) {
-                        callbacks.printOutput("[DEBUG] Adding char: " + c);
-                        allChars.add(c);
-                    }
-                } else if (context.contains("breaks out with ")) {
-                    String c = context.substring(context.indexOf("breaks out with ") + 14).replaceAll("[)]", "");
-                    callbacks.printOutput("[DEBUG] Adding breaking char: " + c);
-                    allChars.add(c);
-                }
-            }
+            //     if (context.contains("(found: ")) {
+            //         String chars = context.substring(context.indexOf("found: ") + 7, context.indexOf(")"));
+            //         callbacks.printOutput("[DEBUG] Found chars in context: " + chars);
+            //         for (String c : chars.split(" ")) {
+            //             callbacks.printOutput("[DEBUG] Adding char: " + c);
+            //             // allChars.add(c);
+            //         }
+            //     } else if (context.contains("breaks out with ")) {
+            //         String c = context.substring(context.indexOf("breaks out with ") + 14).replaceAll("[)]", "");
+            //         callbacks.printOutput("[DEBUG] Adding breaking char: " + c);
+            //         // allChars.add(c);
+            //     }
+            // }
             
-            callbacks.printOutput("[DEBUG] Final allChars set: " + allChars);
-        }
+            // callbacks.printOutput("[DEBUG] Final allChars set: " + allChars);
+        // }
         
         // Get the URL from the base request
         String url = helpers.analyzeRequest(baseRequestResponse).getUrl().toString();

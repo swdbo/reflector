@@ -461,17 +461,12 @@ class Aggressive
         try {
             Map<String, ArrayList<int[]>> reflectionMap = new HashMap<>();
             
-            // Parse the parameter from the test request
-            IRequestInfo requestInfo = helpers.analyzeRequest(testRequest.getBytes());
-            List<IParameter> parameters = requestInfo.getParameters();
-            if (parameters.isEmpty()) {
-                return "";
-            }
-            IParameter currentParam = parameters.get(0);
+            // Get parameter info from the original reflected parameter to preserve type
             Map<String, Object> parameter = new HashMap<>();
-            parameter.put(TYPE, Integer.valueOf(currentParam.getType()));
-            parameter.put(VALUE_START, currentParam.getValueStart());
-            parameter.put(VALUE_END, currentParam.getValueEnd());
+            parameter.putAll(this.reflectedParameters.get(0));
+            byte type = ((Integer)parameter.get(TYPE)).byteValue();
+            callbacks.printOutput("[DEBUG-PAYLOAD] Using parameter info: type=" + 
+                getTypeString(type) + ", name=" + parameter.get(NAME));
             
             String chars = parameter.get(TYPE).equals(IParameter.PARAM_JSON) ? PAYLOAD_JSON : PAYLOAD;
             
@@ -503,7 +498,7 @@ class Aggressive
                     // Track any special character that is found in a match
                     if (!reflectedSpecialChars.contains(String.valueOf(c))) {
                         reflectedSpecialChars.add(String.valueOf(c));
-                        callbacks.printOutput("[DEBUG-PAYLOAD] Added special char to tracking: " + c);
+                        callbacks.printOutput("[DEBUG-PAYLOAD-FOUND] Added special char to tracking: " + c);
                     }
                 }
                 
@@ -584,26 +579,85 @@ class Aggressive
     }
 
     private String prepareRequest(Map parameter, String payload) {
-        String tmpRequest = helpers.bytesToString(baseRequestResponse.getRequest()).substring(0, (int)parameter.get("ValueStart")) + PAYLOAD_GREP
-                + payload + PAYLOAD_GREP + helpers.bytesToString(baseRequestResponse.getRequest()).substring((int)parameter.get("ValueEnd"));
-        String contentLength = "";
-        for (String header : helpers.analyzeRequest(baseRequestResponse).getHeaders())
-        {
-            if(header.toLowerCase().contains("content-length")) {
-                contentLength = header;
-                break;
+        byte type = ((Integer)parameter.get(TYPE)).byteValue();
+        IRequestInfo analyzedRequest = helpers.analyzeRequest(baseRequestResponse.getRequest());
+        List<String> headers = new ArrayList<>(analyzedRequest.getHeaders());
+        byte[] body = Arrays.copyOfRange(baseRequestResponse.getRequest(), analyzedRequest.getBodyOffset(), baseRequestResponse.getRequest().length);
+        
+        callbacks.printOutput("[DEBUG-REQUEST] Preparing request with payload: " + payload);
+        callbacks.printOutput("[DEBUG-REQUEST] Parameter type: " + getTypeString(type));
+        
+        // Handle header modifications (both request and response headers)
+        if (type == Constants.REQUEST_HEADER || type == Constants.RESPONSE_HEADER) {
+            String headerName = (String)parameter.get(NAME);
+            String headerValue = PAYLOAD_GREP + payload + PAYLOAD_GREP;
+            
+            callbacks.printOutput("[DEBUG-REQUEST] Processing " + 
+                (type == Constants.REQUEST_HEADER ? "request" : "response") + 
+                " header: " + headerName);
+            
+            // Create a copy of headers to modify
+            List<String> modifiedHeaders = new ArrayList<>(headers);
+            boolean headerFound = false;
+            
+            // First check if this header exists in the original request
+            for (int i = 0; i < modifiedHeaders.size(); i++) {
+                String currentHeader = modifiedHeaders.get(i);
+                if (currentHeader.toLowerCase().startsWith(headerName.toLowerCase() + ":")) {
+                    // Update existing header
+                    modifiedHeaders.set(i, headerName + ": " + headerValue);
+                    headerFound = true;
+                    break;
+                }
             }
-        }
-        if (contentLength.equals("") || (int)parameter.get(VALUE_START) < helpers.analyzeRequest(baseRequestResponse).getBodyOffset()) {
-            return  tmpRequest;
-        }
-        int paramLength = (int)parameter.get(VALUE_END) - (int)parameter.get(VALUE_START);
-        int lengthDiff = (PAYLOAD_GREP + payload + PAYLOAD_GREP).length() - paramLength;
-        String contentLengthString = contentLength.split(": ")[1].trim();
-        int contentLengthInt = Integer.parseInt(contentLengthString) + lengthDiff;
-        int contentLengthIntOffsetStart = tmpRequest.toLowerCase().indexOf("content-length");
-        tmpRequest = tmpRequest.substring(0, contentLengthIntOffsetStart + 16) + String.valueOf(contentLengthInt) +
+            
+            // If header wasn't found, add it as a new header
+            if (!headerFound) {
+                // Add new header after the first line (request/status line)
+                modifiedHeaders.add(1, headerName + ": " + headerValue);
+            }
+            
+            // Log all headers being sent
+            // callbacks.printOutput("[DEBUG-REQUEST] Sending headers:");
+            // for (String h : modifiedHeaders) {
+            //     callbacks.printOutput("[DEBUG-REQUEST] " + h);
+            // }
+            
+            // Build new request with modified headers
+            byte[] newRequest = helpers.buildHttpMessage(modifiedHeaders, body);
+            return helpers.bytesToString(newRequest);
+        } 
+        // Handle regular parameters
+        else {
+            String tmpRequest = helpers.bytesToString(baseRequestResponse.getRequest())
+                .substring(0, (int)parameter.get("ValueStart")) + 
+                PAYLOAD_GREP + payload + PAYLOAD_GREP + 
+                helpers.bytesToString(baseRequestResponse.getRequest())
+                .substring((int)parameter.get("ValueEnd"));
+            
+            // Update Content-Length if needed
+            String contentLength = "";
+            for (String header : headers) {
+                if(header.toLowerCase().contains("content-length")) {
+                    contentLength = header;
+                    break;
+                }
+            }
+            
+            if (contentLength.equals("") || (int)parameter.get(VALUE_START) < analyzedRequest.getBodyOffset()) {
+                return tmpRequest;
+            }
+            
+            int paramLength = (int)parameter.get(VALUE_END) - (int)parameter.get(VALUE_START);
+            int lengthDiff = (PAYLOAD_GREP + payload + PAYLOAD_GREP).length() - paramLength;
+            String contentLengthString = contentLength.split(": ")[1].trim();
+            int contentLengthInt = Integer.parseInt(contentLengthString) + lengthDiff;
+            int contentLengthIntOffsetStart = tmpRequest.toLowerCase().indexOf("content-length");
+            tmpRequest = tmpRequest.substring(0, contentLengthIntOffsetStart + 16) + 
+                String.valueOf(contentLengthInt) +
                 tmpRequest.substring(contentLengthIntOffsetStart + 16 + contentLengthString.length());
-        return tmpRequest;
+            
+            return tmpRequest;
+        }
     }
 }
