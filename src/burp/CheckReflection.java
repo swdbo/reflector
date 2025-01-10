@@ -457,22 +457,25 @@ class Aggressive
     private String checkResponse(String testRequest) {
         String reflectedPayloadValue = "",
                 symbols = "";
-        int bodyOffset;
+        int bodyOffset = -1;
         try {
             Map<String, ArrayList<int[]>> reflectionMap = new HashMap<>();
+            String lastResponse = null;
             
             // Get parameter info from the original reflected parameter to preserve type
             Map<String, Object> parameter = new HashMap<>();
             parameter.putAll(this.reflectedParameters.get(0));
             byte type = ((Integer)parameter.get(TYPE)).byteValue();
-            callbacks.printOutput("[DEBUG-PAYLOAD] Using parameter info: type=" + 
-                getTypeString(type) + ", name=" + parameter.get(NAME));
+            callbacks.printOutput("[DEBUG-HEADER] Parameter type: " + type);
+            callbacks.printOutput("[DEBUG-HEADER] Parameter name: " + parameter.get(NAME));
+            callbacks.printOutput("[DEBUG-HEADER] Testing special chars: " + (parameter.get(TYPE).equals(IParameter.PARAM_JSON) ? PAYLOAD_JSON : PAYLOAD));
             
             String chars = parameter.get(TYPE).equals(IParameter.PARAM_JSON) ? PAYLOAD_JSON : PAYLOAD;
             
             // Test each special character individually
+            callbacks.printOutput("[DEBUG-HEADER] Starting special character tests...");
             for (char c : chars.toCharArray()) {
-                callbacks.printOutput("[DEBUG-PAYLOAD] Testing character: " + c);
+                callbacks.printOutput("[DEBUG-HEADER] Testing character: " + c);
                 String singleCharRequest = prepareRequest(parameter, String.valueOf(c));
                 
                 IHttpRequestResponse responseObject = this.callbacks.makeHttpRequest(
@@ -514,6 +517,7 @@ class Aggressive
 
             // Get a combined response for context analysis
             String combinedPayload = String.join("", reflectionMap.keySet());
+            callbacks.printOutput("[DEBUG-CONTEXT] Get a combined response for context analysis because easier for now");
             String response = helpers.bytesToString(this.callbacks.makeHttpRequest(
                     this.baseRequestResponse.getHttpService(),
                     prepareRequest(parameter, combinedPayload).getBytes()

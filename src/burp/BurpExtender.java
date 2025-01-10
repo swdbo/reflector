@@ -543,7 +543,7 @@ public class BurpExtender implements IBurpExtender, IScannerCheck, ITab, IContex
         result.append(String.format("%s '%s' - [%s] - %s - %s=%s - reflected %d times",
             parameterType,
             paramName,
-            String.join("", (reflectedSpecialChars.isEmpty() ? "" : " [poo Found special chars: " + String.join(" ", reflectedSpecialChars) + " oop]")),  // Sort the characters for consistent output
+            String.join("", (reflectedSpecialChars.isEmpty() ? "" : "[ " + String.join(" ", reflectedSpecialChars) + " ]")),  // Sort the characters for consistent output
             url,
             paramName,
             param.get(VALUE),
