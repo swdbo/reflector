@@ -265,24 +265,31 @@ public class CheckReflection {
                                     helpers.bytesToString(Arrays.copyOfRange(canaryResp.getResponse(), match[0], match[1]))));
                             }
                             
-                            // Create parameter description map
-                            Map<String, Object> headerDescription = new HashMap<>();
-                            headerDescription.put(NAME, headerName);
-                            headerDescription.put(VALUE, headerValue);
-                            headerDescription.put(TYPE, Integer.valueOf(Constants.REQUEST_HEADER));
-                            headerDescription.put(MATCHES, originalMatches);
-                            headerDescription.put(REFLECTED_IN, checkWhereReflectionPlaced(originalMatches));
-                            
-                            // Add header position information
-                            String headerLine = headerName + ": " + headerValue;
-                            int headerStart = helpers.bytesToString(request).indexOf(headerLine);
-                            if (headerStart != -1) {
-                                int valueStart = headerStart + headerName.length() + 2; // +2 for ": "
-                                headerDescription.put(VALUE_START, valueStart);
-                                headerDescription.put(VALUE_END, valueStart + headerValue.length());
+                            // Only add if reflection is in body
+                            String reflectedIn = checkWhereReflectionPlaced(originalMatches);
+                            if (!reflectedIn.equals(HEADERS)) {
+                                // Create parameter description map
+                                Map<String, Object> headerDescription = new HashMap<>();
+                                headerDescription.put(NAME, headerName);
+                                headerDescription.put(VALUE, headerValue);
+                                headerDescription.put(TYPE, Integer.valueOf(Constants.REQUEST_HEADER));
+                                headerDescription.put(MATCHES, originalMatches);
+                                headerDescription.put(REFLECTED_IN, reflectedIn);
+                                
+                                // Add header position information
+                                String headerLine = headerName + ": " + headerValue;
+                                int headerStart = helpers.bytesToString(request).indexOf(headerLine);
+                                if (headerStart != -1) {
+                                    int valueStart = headerStart + headerName.length() + 2; // +2 for ": "
+                                    headerDescription.put(VALUE_START, valueStart);
+                                    headerDescription.put(VALUE_END, valueStart + headerValue.length());
+                                }
+                                
+                                reflectedParameters.add(headerDescription);
+                                callbacks.printOutput("[CANARY CONFIRMED] Request header '" + headerName + "' reflection verified in " + reflectedIn);
+                            } else {
+                                callbacks.printOutput("[CANARY CONFIRMED] Skipping request header '" + headerName + "' (reflection only in headers)");
                             }
-                            
-                            reflectedParameters.add(headerDescription);
                             callbacks.printOutput("[CANARY CONFIRMED] Request header '" + headerName + "' reflection verified");
                         } else {
                             callbacks.printOutput("[CANARY FAILED] Request header '" + headerName + "' reflection could not be verified");
@@ -418,11 +425,20 @@ public class CheckReflection {
     private boolean shouldSkipHeader(String headerName) {
         // List of headers that shouldn't be tested
         String[] skipHeaders = {
+            // Standard headers that shouldn't be tested
             "Content-Length",
             "Content-Type",
             "Date",
             "Expires",
-            "Last-Modified"
+            "Last-Modified",
+            // Connection-related headers
+            "Keep-Alive",
+            "Connection",
+            "Trailer",
+            "Transfer-Encoding",
+            // Server info headers
+            "Server",
+            "Server-Timing"
         };
         
         return Arrays.asList(skipHeaders).contains(headerName);
@@ -522,7 +538,7 @@ class Aggressive
             callbacks.printOutput("[DEBUG] Preparing test request for parameter: " + paramName);
             testRequest = prepareRequest(param);
             callbacks.printOutput("[DEBUG] Test request prepared: " + testRequest.length() + " bytes");
-            symbols = checkResponse(testRequest);
+            symbols = checkResponse(testRequest, param);
             
             if (!symbols.equals("")) {
                 callbacks.printOutput("[SPECIAL CHARS] " + paramType + " '" + paramName + "' is vulnerable to: " + symbols);
@@ -558,7 +574,7 @@ class Aggressive
         return value.replaceAll("[^<\"'`\\\\]", "").replaceAll("(\\\\\"|\\\\')", "").replaceAll("[\\\\]", "");
     }
 
-    private String checkResponse(String testRequest) {
+    private String checkResponse(String testRequest, Map param) {
         String reflectedPayloadValue = "",
                 symbols = "";
         int bodyOffset = -1;
@@ -566,9 +582,8 @@ class Aggressive
             Map<String, ArrayList<int[]>> reflectionMap = new HashMap<>();
             String lastResponse = null;
             
-            // Get parameter info from the original reflected parameter to preserve type
-            Map<String, Object> parameter = new HashMap<>();
-            parameter.putAll(this.reflectedParameters.get(0));
+            // Use the parameter being tested
+            Map<String, Object> parameter = param;
             byte type = ((Integer)parameter.get(TYPE)).byteValue();
             callbacks.printOutput("[DEBUG-HEADER] Parameter type: " + type);
             callbacks.printOutput("[DEBUG-HEADER] Parameter name: " + parameter.get(NAME));
@@ -582,23 +597,146 @@ class Aggressive
                 callbacks.printOutput("[DEBUG-HEADER] Testing character: " + c);
                 String singleCharRequest = prepareRequest(parameter, String.valueOf(c));
                 
+                // Log the request we're sending
+                callbacks.printOutput("[DEBUG-REQUEST] Sending request:");
+                callbacks.printOutput(singleCharRequest);
+                
                 IHttpRequestResponse responseObject = this.callbacks.makeHttpRequest(
                         this.baseRequestResponse.getHttpService(),
                         singleCharRequest.getBytes()
                 );
                 String response = helpers.bytesToString(responseObject.getResponse());
-                callbacks.printOutput("[DEBUG-PAYLOAD] Got response of length: " + response.length());
-
                 bodyOffset = helpers.analyzeResponse(responseObject.getResponse()).getBodyOffset();
+                
+                // Log response details
+                callbacks.printOutput("[DEBUG-PAYLOAD] Response details:");
+                callbacks.printOutput("[DEBUG-PAYLOAD] - Length: " + response.length());
+                callbacks.printOutput("[DEBUG-PAYLOAD] - Body offset: " + bodyOffset);
+                
+                // Get response body and headers
+                String headers = response.substring(0, bodyOffset);
+                String body = response.substring(bodyOffset);
+                
+                // Log full response structure
+                callbacks.printOutput("[DEBUG-PAYLOAD] Response structure:");
+                callbacks.printOutput("[DEBUG-PAYLOAD] Headers (" + headers.length() + " bytes):");
+                String[] headerLines = headers.split("\r\n");
+                for (String line : headerLines) {
+                    callbacks.printOutput("[DEBUG-PAYLOAD] " + line);
+                }
+                callbacks.printOutput("[DEBUG-PAYLOAD] Body (" + body.length() + " bytes):");
+                callbacks.printOutput("[DEBUG-PAYLOAD] First 200 chars: " + body.substring(0, Math.min(200, body.length())));
+                
+                // Search for our markers and special char in headers and body separately
+                callbacks.printOutput("\n[DEBUG-PAYLOAD] Searching in headers:");
+                int headerMarkerIndex = headers.indexOf(PAYLOAD_GREP);
+                while (headerMarkerIndex != -1) {
+                    int contextStart = Math.max(0, headerMarkerIndex - 20);
+                    int contextEnd = Math.min(headers.length(), headerMarkerIndex + PAYLOAD_GREP.length() + 20);
+                    String context = headers.substring(contextStart, contextEnd);
+                    
+                    callbacks.printOutput("[DEBUG-PAYLOAD] Found marker at offset " + headerMarkerIndex + ":");
+                    callbacks.printOutput("[DEBUG-PAYLOAD] - Context: ..." + context + "...");
+                    callbacks.printOutput("[DEBUG-PAYLOAD] - Bytes: " + Arrays.toString(context.getBytes()));
+                    
+                    // Look for special char near this marker
+                    int specialCharPos = headers.indexOf(c, headerMarkerIndex);
+                    if (specialCharPos != -1 && specialCharPos < headerMarkerIndex + 20) {
+                        callbacks.printOutput("[DEBUG-PAYLOAD] - Found special char '" + c + "' at offset " + specialCharPos);
+                        callbacks.printOutput("[DEBUG-PAYLOAD] - Distance from marker: " + (specialCharPos - headerMarkerIndex) + " chars");
+                    }
+                    
+                    headerMarkerIndex = headers.indexOf(PAYLOAD_GREP, headerMarkerIndex + 1);
+                }
+                
+                callbacks.printOutput("\n[DEBUG-PAYLOAD] Searching in body:");
+                int bodyMarkerIndex = body.indexOf(PAYLOAD_GREP);
+                while (bodyMarkerIndex != -1) {
+                    int contextStart = Math.max(0, bodyMarkerIndex - 20);
+                    int contextEnd = Math.min(body.length(), bodyMarkerIndex + PAYLOAD_GREP.length() + 20);
+                    String context = body.substring(contextStart, contextEnd);
+                    
+                    callbacks.printOutput("[DEBUG-PAYLOAD] Found marker at offset " + bodyMarkerIndex + ":");
+                    callbacks.printOutput("[DEBUG-PAYLOAD] - Context: ..." + context + "...");
+                    callbacks.printOutput("[DEBUG-PAYLOAD] - Bytes: " + Arrays.toString(context.getBytes()));
+                    
+                    // Look for special char near this marker
+                    int specialCharPos = body.indexOf(c, bodyMarkerIndex);
+                    if (specialCharPos != -1 && specialCharPos < bodyMarkerIndex + 20) {
+                        callbacks.printOutput("[DEBUG-PAYLOAD] - Found special char '" + c + "' at offset " + specialCharPos);
+                        callbacks.printOutput("[DEBUG-PAYLOAD] - Distance from marker: " + (specialCharPos - bodyMarkerIndex) + " chars");
+                    }
+                    
+                    bodyMarkerIndex = body.indexOf(PAYLOAD_GREP, bodyMarkerIndex + 1);
+                }
 
                 // Look for reflection of this specific character
                 Pattern singleCharPattern = Pattern.compile(PAYLOAD_GREP + c + PAYLOAD_GREP);
                 Matcher matcher = singleCharPattern.matcher(response);
                 ArrayList<int[]> payloadIndexes = new ArrayList<>();
                 
+                if (!matcher.find()) {
+                    // If no match found, try to find the payload marker to see what happened
+                    Pattern markerPattern = Pattern.compile(PAYLOAD_GREP + "[^" + PAYLOAD_GREP + "]{0,20}" + PAYLOAD_GREP);
+                    Matcher markerMatcher = markerPattern.matcher(response);
+                    
+                    if (!markerMatcher.find()) {
+                        // If no markers found at all, search for individual markers
+                        Pattern singleMarkerPattern = Pattern.compile(PAYLOAD_GREP);
+                        Matcher singleMarkerMatcher = singleMarkerPattern.matcher(response);
+                        
+                        callbacks.printOutput("[DEBUG-PAYLOAD] No reflection found for character: " + c);
+                        callbacks.printOutput("[DEBUG-PAYLOAD] Expected: " + PAYLOAD_GREP + c + PAYLOAD_GREP);
+                        
+                        while (singleMarkerMatcher.find()) {
+                            int contextStart = Math.max(0, singleMarkerMatcher.start() - 20);
+                            int contextEnd = Math.min(response.length(), singleMarkerMatcher.end() + 20);
+                            String context = response.substring(contextStart, contextEnd);
+                            
+                            callbacks.printOutput("[DEBUG-PAYLOAD] Found isolated marker at position " + singleMarkerMatcher.start());
+                            callbacks.printOutput("[DEBUG-PAYLOAD] Context: ..." + context + "...");
+                            callbacks.printOutput("[DEBUG-PAYLOAD] Bytes: " + Arrays.toString(context.getBytes()));
+                        }
+                    } else {
+                        // Reset and find all marker pairs
+                        markerMatcher.reset();
+                        while (markerMatcher.find()) {
+                            String matchedContent = markerMatcher.group();
+                            // Get some context around the match
+                            int contextStart = Math.max(0, markerMatcher.start() - 20);
+                            int contextEnd = Math.min(response.length(), markerMatcher.end() + 20);
+                            String context = response.substring(contextStart, contextEnd);
+                            
+                            callbacks.printOutput("[DEBUG-PAYLOAD] Found markers but character modified:");
+                            callbacks.printOutput("[DEBUG-PAYLOAD] Content between markers: " + matchedContent);
+                            callbacks.printOutput("[DEBUG-PAYLOAD] Context: ..." + context + "...");
+                            callbacks.printOutput("[DEBUG-PAYLOAD] Expected: " + PAYLOAD_GREP + c + PAYLOAD_GREP);
+                            callbacks.printOutput("[DEBUG-PAYLOAD] Actual bytes: " + Arrays.toString(matchedContent.getBytes()));
+                            
+                            // Try to identify what happened to the character
+                            String between = matchedContent.substring(PAYLOAD_GREP.length(), matchedContent.length() - PAYLOAD_GREP.length());
+                            if (between.isEmpty()) {
+                                callbacks.printOutput("[DEBUG-PAYLOAD] Character was removed");
+                            } else if (between.length() > 1) {
+                                callbacks.printOutput("[DEBUG-PAYLOAD] Character was encoded/expanded: " + between);
+                            } else if (between.charAt(0) != c) {
+                                callbacks.printOutput("[DEBUG-PAYLOAD] Character was changed from '" + c + "' to '" + between + "'");
+                            }
+                        }
+                    }
+                }
+                
+                // Reset matcher to start
+                matcher.reset();
                 while (matcher.find()) {
-                    String matchedContent = response.substring(matcher.start(), matcher.end());
+                    String matchedContent = matcher.group();
+                    // Get some context around the match
+                    int contextStart = Math.max(0, matcher.start() - 20);
+                    int contextEnd = Math.min(response.length(), matcher.end() + 20);
+                    String context = response.substring(contextStart, contextEnd);
+                    
                     callbacks.printOutput("[DEBUG-PAYLOAD] Found match: " + matchedContent);
+                    callbacks.printOutput("[DEBUG-PAYLOAD] Context: ..." + context + "...");
                     callbacks.printOutput("[DEBUG-PAYLOAD] Match bytes: " + Arrays.toString(matchedContent.getBytes()));
                     payloadIndexes.add(new int[]{matcher.start() - bodyOffset, matcher.end() - bodyOffset});
                     
@@ -726,10 +864,10 @@ class Aggressive
             }
             
             // Log all headers being sent
-            // callbacks.printOutput("[DEBUG-REQUEST] Sending headers:");
-            // for (String h : modifiedHeaders) {
-            //     callbacks.printOutput("[DEBUG-REQUEST] " + h);
-            // }
+            callbacks.printOutput("[DEBUG-REQUEST] Sending headers:");
+            for (String h : modifiedHeaders) {
+                callbacks.printOutput("[DEBUG-REQUEST] " + h);
+            }
             
             // Build new request with modified headers
             byte[] newRequest = helpers.buildHttpMessage(modifiedHeaders, body);
