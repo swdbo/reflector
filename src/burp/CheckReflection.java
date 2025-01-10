@@ -122,7 +122,52 @@ public class CheckReflection {
             parameter.getName(), 
             parameter.getValue()));
             
-        if (bytesOfParamValue.length > 2) {
+        if (bytesOfParamValue.length == 0) {
+            // For empty parameters, consider them reflected and test with canary
+            String canaryValue = generateCanaryValue();
+            callbacks.printOutput(String.format("[DEBUG] Empty parameter, testing with canary value: %s", canaryValue));
+                
+            // Create a copy of the original request before modifying
+            byte[] canaryRequest = this.request.clone();
+            
+            // Update the parameter in the copied request
+            canaryRequest = helpers.updateParameter(canaryRequest, 
+                helpers.buildParameter(parameter.getName(), canaryValue, parameter.getType()));
+            
+            IHttpRequestResponse canaryResp = callbacks.makeHttpRequest(
+                iHttpRequestResponse.getHttpService(),
+                canaryRequest
+            );
+
+            List<int[]> canaryMatches = getMatches(canaryResp.getResponse(), canaryValue.getBytes());
+            
+            callbacks.printOutput(String.format("[DEBUG] Found %d canary matches for empty parameter", canaryMatches.size()));
+            
+            if (!canaryMatches.isEmpty()) {
+                callbacks.printOutput(String.format("[CANARY CONFIRMED] %s '%s' reflection verified",
+                    parameterType,
+                    parameter.getName()));
+                
+                Map<String, Object> parameterDescription = new HashMap<>();
+                parameterDescription.put(NAME, parameter.getName());
+                parameterDescription.put(VALUE, parameter.getValue());
+                parameterDescription.put(TYPE, Integer.valueOf(parameter.getType()));
+                parameterDescription.put(MATCHES, canaryMatches);
+                String reflectedIn = checkWhereReflectionPlaced(canaryMatches);
+                parameterDescription.put(REFLECTED_IN, reflectedIn);
+                parameterDescription.put(VALUE_START, parameter.getValueStart());
+                parameterDescription.put(VALUE_END, parameter.getValueEnd());
+                
+                callbacks.printOutput("[DEBUG] Empty parameter reflection details:");
+                callbacks.printOutput("[DEBUG] - Name: " + parameter.getName());
+                callbacks.printOutput("[DEBUG] - Type: " + parameterType);
+                callbacks.printOutput("[DEBUG] - Reflected in: " + reflectedIn);
+                callbacks.printOutput("[DEBUG] - Number of matches: " + canaryMatches.size());
+                
+                reflectedParameters.add(parameterDescription);
+            }
+        } else {
+            // For non-empty parameters, use existing logic
             List<int[]> originalMatches = getMatches(iHttpRequestResponse.getResponse(), bytesOfParamValue);
             
             callbacks.printOutput(String.format("[DEBUG] Found %d original matches for parameter %s", 
