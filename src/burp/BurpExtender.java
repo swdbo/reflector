@@ -511,31 +511,6 @@ public class BurpExtender implements IBurpExtender, IScannerCheck, ITab, IContex
         
         StringBuilder result = new StringBuilder("<li>");
         
-        // Extract all special characters from the findings
-        // Set<String> allChars = new HashSet<>();
-        // if (!vulnerableChars.isEmpty()) {
-            // callbacks.printOutput("[DEBUG] Processing vulnerable chars: " + vulnerableChars);
-            
-            // for (String context : vulnerableChars.split(" \\| ")) {
-            //     callbacks.printOutput("[DEBUG] Processing context: " + context);
-                
-            //     if (context.contains("(found: ")) {
-            //         String chars = context.substring(context.indexOf("found: ") + 7, context.indexOf(")"));
-            //         callbacks.printOutput("[DEBUG] Found chars in context: " + chars);
-            //         for (String c : chars.split(" ")) {
-            //             callbacks.printOutput("[DEBUG] Adding char: " + c);
-            //             // allChars.add(c);
-            //         }
-            //     } else if (context.contains("breaks out with ")) {
-            //         String c = context.substring(context.indexOf("breaks out with ") + 14).replaceAll("[)]", "");
-            //         callbacks.printOutput("[DEBUG] Adding breaking char: " + c);
-            //         // allChars.add(c);
-            //     }
-            // }
-            
-            // callbacks.printOutput("[DEBUG] Final allChars set: " + allChars);
-        // }
-        
         // Get the URL from the base request
         String url = helpers.analyzeRequest(baseRequestResponse).getUrl().toString();
         
@@ -563,24 +538,6 @@ public class BurpExtender implements IBurpExtender, IScannerCheck, ITab, IContex
         return result.append("</li>").toString();
     }
 
-    // ## previous version
-    // private String buildIssueForReflection( Map param)
-    // {
-    //     String reflectedIn = "";
-    //     reflectedIn+="<li>";
-    //     reflectedIn+=param.get(NAME);
-    //     reflectedIn+=" - reflected "+ String.valueOf(((List)param.get(MATCHES)).size())+" times ";
-    //     if (param.containsKey(VULNERABLE))
-    //     {
-    //         reflectedIn += "and allow the following characters: "+ String.valueOf(param.get(VULNERABLE));
-    //         if (settings.getCheckContext() && !String.valueOf(param.get(VULNERABLE)).contains(CONTEXT_VULN_FLAG))
-    //             return reflectedIn+ "</li>" ;
-    //         issueName = XSS_VULNERABLE;
-    //     }
-    //     return reflectedIn+ "</li>" ;
-    // }
-    
-
     private String getParameterTypeDescription(int type) {
         if (type == IParameter.PARAM_COOKIE) {
             return "Cookie";
@@ -598,158 +555,11 @@ public class BurpExtender implements IBurpExtender, IScannerCheck, ITab, IContex
 
     @Override
     public List<IScanIssue> doPassiveScan(IHttpRequestResponse baseRequestResponse) throws RuntimeException {
-        if ( this.settings.getScopeOnly() && !callbacks.isInScope(helpers.analyzeRequest(baseRequestResponse).getUrl()) )
-            return null;
-        // check content type
-        String contentType = "";
-        for (String header: helpers.analyzeResponse(baseRequestResponse.getResponse()).getHeaders()) {
-            if (header.toLowerCase().contains("content-type: ")) {
-                contentType = header.toLowerCase().split(": ", 2)[1];
-                break;
-            }
-        }
-        if (settings.getEnabledContentTypes() == null)
-            return null;
-        boolean isContentTypeAllowed = false;
-        for (String allowedContentType: settings.getEnabledContentTypes()) {
-            if (contentType.contains(allowedContentType)) {
-                contentType = allowedContentType;
-                isContentTypeAllowed = true;
-                break;
-            }
-        }
-        issueName = XSS_POSSIBLE;
-        // start analyze request
-        if ( isContentTypeAllowed )
-        {
-            //Initialize check reflections
-            this.checkReflection = new CheckReflection(settings, helpers, baseRequestResponse, callbacks);
-            List<Map> reflections = this.checkReflection.checkResponse();
-            if (!reflections.isEmpty())
-            {
-                // report the issue
-                String reflectedInBody = "";
-                String reflectedInHeader = "";
-                String reflectedInAll = "";
-                List<int[]> matches = new ArrayList<>();
-                List<Pair> pairs = new ArrayList<>();
-                for(Map param: reflections) {
-                    // Update parameter history table
-                    String paramName = (String)param.get(NAME);
-                    String paramType = getParameterTypeDescription(param.get(TYPE) instanceof Byte ? 
-                        ((Byte)param.get(TYPE)).intValue() : 
-                        (Integer)param.get(TYPE));
-                    String paramValue = (String)param.get(VALUE);
-                    String url = helpers.analyzeRequest(baseRequestResponse).getUrl().toString();
-                    List<int[]> paramMatches = (List<int[]>)param.get(MATCHES);
-                    parameterModel.updateParameter(paramName, paramType, paramValue, url, paramMatches);
-
-                    // Build reflection summary
-                    if(param.get(REFLECTED_IN).equals(BODY)){
-                        reflectedInBody+=buildIssueForReflection(param, baseRequestResponse);
-                    }
-                    if(param.get(REFLECTED_IN).equals(HEADERS)){
-                        reflectedInHeader+=buildIssueForReflection(param, baseRequestResponse);
-                    }
-                    if(param.get(REFLECTED_IN).equals(BOTH)){
-                        reflectedInAll+=buildIssueForReflection(param, baseRequestResponse);
-                    }
-                    for (Object pair : (ArrayList)param.get(MATCHES)) {
-                        pairs.add(new Pair((int[]) pair));
-                    }
-                }
-                String START = ":<br><ul>";
-                String END = "</ul>";
-                String reflectedSummary = "";
-                if(!reflectedInHeader.equals(""))
-                    reflectedSummary+=DESCRIPTION_DETAILS + HEADERS+START+reflectedInHeader+END;
-                if(!reflectedInBody.equals(""))
-                    reflectedSummary+=DESCRIPTION_DETAILS + BODY + START + reflectedInBody+END;
-                if(!reflectedInAll.equals(""))
-                    reflectedSummary+=DESCRIPTION_DETAILS+BOTH+START+reflectedInAll+END;
-                Collections.sort(pairs, new Comparator<Pair>() {
-                    @Override
-                    public int compare(Pair o1, Pair o2) {
-                        if (o1.getStart() == o2.getStart())
-                            return 0;
-                        return o1.getStart() < o2.getStart() ? -1 : 1;
-                    }
-                });
-                int[] tmpPair = null;
-                for (Pair pair : pairs)
-                {
-                    if (tmpPair == null)
-                        tmpPair = pair.getPair();
-                    else if (tmpPair[1] > pair.getPair()[0])
-                        tmpPair[1] = pair.getPair()[1];
-                    else {
-                        matches.add(tmpPair);
-                        tmpPair = pair.getPair();
-                    }
-                }
-                if (tmpPair != null) {
-                    matches.add(tmpPair);
-                }
-                List<IScanIssue> issues = new ArrayList<>();
-                issues.add(new CustomScanIssue(
-                        baseRequestResponse.getHttpService(),
-                        helpers.analyzeRequest(baseRequestResponse).getUrl(),
-                        new IHttpRequestResponse[]{callbacks.applyMarkers(baseRequestResponse, null, matches)},
-                        issueName,
-                        reflectedSummary,
-                        getSeverity(issueName)));
-                return issues;
-            } else return null;
-        }
-        else return null;
+        return doPassiveScan(baseRequestResponse, false);
     }
 
-    private enum ScanType {
-        REGULAR,    // Normal scan with existing parameters
-        CUSTOM,     // Only scan custom headers from our list
-        COMBINED    // Scan both existing parameters and custom headers
-    }
-
-    private void runScan(IContextMenuInvocation invocation, ScanType scanType) {
-        new Thread(() -> {
-            IHttpRequestResponse[] messages = invocation.getSelectedMessages();
-            if (messages != null && messages.length > 0) {
-                for (IHttpRequestResponse message : messages) {
-                    callbacks.printOutput("[+] Starting reflection test for: " + 
-                        helpers.analyzeRequest(message).getUrl().toString());
-                    
-                    // Run scan based on type
-                    List<IScanIssue> issues = null;
-                    switch (scanType) {
-                        case REGULAR:
-                            issues = doPassiveScan(message);
-                            break;
-                        case CUSTOM:
-                            issues = doCustomScan(message);
-                            break;
-                        case COMBINED:
-                            List<IScanIssue> regularIssues = doPassiveScan(message);
-                            List<IScanIssue> customIssues = doCustomScan(message);
-                            if (regularIssues != null || customIssues != null) {
-                                issues = new ArrayList<>();
-                                if (regularIssues != null) issues.addAll(regularIssues);
-                                if (customIssues != null) issues.addAll(customIssues);
-                            }
-                            break;
-                    }
-                    
-                    if (issues != null) {
-                        for (IScanIssue issue : issues) {
-                            callbacks.addScanIssue(issue);
-                        }
-                    }
-                }
-            }
-        }, "Reflection-Scanner-Thread").start();
-    }
-
-    private List<IScanIssue> doCustomScan(IHttpRequestResponse baseRequestResponse) {
-        // First check if URL is in scope
+    private List<IScanIssue> doPassiveScan(IHttpRequestResponse baseRequestResponse, boolean includeCustomHeaders) throws RuntimeException {
+        // Check if URL is in scope
         if (settings.getScopeOnly() && !callbacks.isInScope(helpers.analyzeRequest(baseRequestResponse).getUrl())) {
             return null;
         }
@@ -780,222 +590,141 @@ public class BurpExtender implements IBurpExtender, IScannerCheck, ITab, IContex
         // Reset issue name at start of scan
         issueName = XSS_POSSIBLE;
 
-        // Get request and response info
+        // Get request info
         IRequestInfo requestInfo = helpers.analyzeRequest(baseRequestResponse);
         String url = requestInfo.getUrl().toString();
-        
-        callbacks.printOutput("\n[+] Starting custom header scan for: " + url);
-        callbacks.printOutput("[+] Number of custom headers to test: " + headerListModel.getSize());
-        
-        // Get original request details
         byte[] request = baseRequestResponse.getRequest();
         List<String> headers = requestInfo.getHeaders();
         
-        // Log original request headers
-        callbacks.printOutput("\n[+] Original request headers:");
-        for (String header : headers) {
-            callbacks.printOutput("    " + header);
-        }
-        
-        // Create fake parameters for our custom headers
-        List<Map<String, Object>> customParams = new ArrayList<>();
-        
-        // Test each custom header
-        for (int i = 0; i < headerListModel.getSize(); i++) {
-            String headerName = headerListModel.getElementAt(i);
-            String headerValue = "BURP-TEST-" + headerName + "-VALUE-" + UUID.randomUUID().toString().substring(0, 8);
+        // Add custom headers to the request if needed
+        IHttpRequestResponse requestToTest = baseRequestResponse;
+        if (includeCustomHeaders && headerListModel.getSize() > 0) {
+            callbacks.printOutput("\n[+] Adding custom headers to request for: " + url);
+            callbacks.printOutput("[+] Number of custom headers to test: " + headerListModel.getSize());
             
-            callbacks.printOutput("\n[+] Testing header: " + headerName);
-            callbacks.printOutput("    Test value: " + headerValue);
-            
-            // Create new headers list with our test header
+            // Add all custom headers in a single request
             List<String> newHeaders = new ArrayList<>(headers);
-            newHeaders.add(headerName + ": " + headerValue);
             
-            // Log the request we're about to send
-            callbacks.printOutput("\n    Sending modified request:");
-            callbacks.printOutput("    URL: " + url);
-            callbacks.printOutput("    Headers:");
-            for (String header : newHeaders) {
-                callbacks.printOutput("        " + header);
+            // Generate unique values for each header
+            for (int i = 0; i < headerListModel.getSize(); i++) {
+                String headerName = headerListModel.getElementAt(i);
+                String headerValue = "BURP-TEST-" + headerName + "-VALUE-" + UUID.randomUUID().toString().substring(0, 8);
+                newHeaders.add(headerName + ": " + headerValue);
             }
             
-            // Build and send request
+            // Build and send request with all headers
             byte[] body = Arrays.copyOfRange(request, requestInfo.getBodyOffset(), request.length);
             byte[] newRequest = helpers.buildHttpMessage(newHeaders, body);
-            IHttpRequestResponse newReqRes = callbacks.makeHttpRequest(
-                baseRequestResponse.getHttpService(), 
-                newRequest
-            );
-            
-            // Analyze the response
-            byte[] response = newReqRes.getResponse();
-            IResponseInfo responseInfo = helpers.analyzeResponse(response);
-            String responseStr = helpers.bytesToString(response);
-            String responseBody = responseStr.substring(responseInfo.getBodyOffset());
-            
-            callbacks.printOutput("\n    Response received:");
-            callbacks.printOutput("        Status code: " + responseInfo.getStatusCode());
-            String respContentType = getResponseHeader(responseInfo, "Content-Type");
-            callbacks.printOutput("        Content type: " + (respContentType != null ? respContentType : "not specified"));
-            callbacks.printOutput("        Length: " + response.length + " bytes");
-            
-            // First check original response for existing header value reflections
-            byte[] origResponse = baseRequestResponse.getResponse();
-            IResponseInfo origResponseInfo = helpers.analyzeResponse(origResponse);
-            String origResponseStr = helpers.bytesToString(origResponse);
-            String origResponseBody = origResponseStr.substring(origResponseInfo.getBodyOffset());
-            
-            // Get existing header value if present
-            String existingValue = null;
-            for (String header : headers) {
-                if (header.toLowerCase().startsWith(headerName.toLowerCase() + ": ")) {
-                    existingValue = header.substring(header.indexOf(":") + 1).trim();
-                    break;
-                }
-            }
-            
-            callbacks.printOutput("    Existing header value: " + (existingValue != null ? existingValue : "not present"));
-            
-            // Look for reflections of our test value
-            List<int[]> matches = getMatches(response, headerValue.getBytes());
-            
-            if (!matches.isEmpty()) {
-                callbacks.printOutput("\n    Found reflections for header: " + headerName);
-                callbacks.printOutput("    Value: " + headerValue);
-                callbacks.printOutput("    Number of reflections: " + matches.size());
-                
-                // Create reflection map
-                Map<String, Object> reflection = new HashMap<>();
-                reflection.put(NAME, headerName);
-                reflection.put(VALUE, headerValue);
-                reflection.put(TYPE, Integer.valueOf(Constants.REQUEST_HEADER));
-                reflection.put(MATCHES, matches);
-                
-                // Determine if reflection is in headers or body
-                String reflectedIn = "";
-                int bodyOffset = responseInfo.getBodyOffset();
-                for (int[] match : matches) {
-                    if (match[0] >= bodyOffset) {
-                        reflectedIn = reflectedIn.equals(HEADERS) ? BOTH : BODY;
-                    } else {
-                        reflectedIn = reflectedIn.equals(BODY) ? BOTH : HEADERS;
-                    }
-                }
-                reflection.put(REFLECTED_IN, reflectedIn);
-                
-                // Add to our custom parameters
-                customParams.add(reflection);
-                
-                // Log reflection details
-                callbacks.printOutput("    Reflected in: " + reflectedIn);
-                
-                // Log reflection contexts
-                for (int[] match : matches) {
-                    int contextOffset = match[0] - bodyOffset;
-                    if (contextOffset >= 0) { // Only show context for body reflections
-                        String reflectionContext = getReflectionContext(responseBody, contextOffset, headerValue);
-                        callbacks.printOutput("\n    Reflection context:");
-                        callbacks.printOutput("    " + reflectionContext);
-                    }
-                }
-                }
-            }
+            requestToTest = callbacks.makeHttpRequest(baseRequestResponse.getHttpService(), newRequest);
+        }
         
-        if (!customParams.isEmpty()) {
+        // Do reflection checks for both regular parameters and custom headers
+        this.checkReflection = new CheckReflection(settings, helpers, requestToTest, callbacks);
+        List<Map> reflections = this.checkReflection.checkResponse();
+        if (reflections.isEmpty()) {
+            return null;
+        }
+
+        // Build the issue
+        String reflectedInBody = "";
+        String reflectedInHeader = "";
+        String reflectedInAll = "";
+        List<int[]> matches = new ArrayList<>();
+        List<Pair> pairs = new ArrayList<>();
+        
+        for(Map param: reflections) {
+            // Update parameter history table
+            String paramName = (String)param.get(NAME);
+            String paramType = getParameterTypeDescription(param.get(TYPE) instanceof Byte ? 
+                ((Byte)param.get(TYPE)).intValue() : 
+                (Integer)param.get(TYPE));
+            String paramValue = (String)param.get(VALUE);
+            List<int[]> paramMatches = (List<int[]>)param.get(MATCHES);
+            parameterModel.updateParameter(paramName, paramType, paramValue, url, paramMatches);
+
             // Build reflection summary
-            String reflectedInBody = "";
-            String reflectedInHeader = "";
-            String reflectedInAll = "";
-            List<int[]> matches = new ArrayList<>();
-            List<Pair> pairs = new ArrayList<>();
-            
-            for (Map param : customParams) {
-                // Update parameter history
-                String paramName = (String)param.get(NAME);
-                String paramType = getParameterTypeDescription(param.get(TYPE) instanceof Byte ? 
-                    ((Byte)param.get(TYPE)).intValue() : 
-                    (Integer)param.get(TYPE));
-                String paramValue = (String)param.get(VALUE);
-                List<int[]> paramMatches = (List<int[]>)param.get(MATCHES);
-                parameterModel.updateParameter(paramName, paramType, paramValue, url, paramMatches);
-                
-                // Build reflection summary based on where it was reflected
-                if(param.get(REFLECTED_IN).equals(BODY)){
-                    reflectedInBody += buildIssueForReflection(param, baseRequestResponse);
-                }
-                if(param.get(REFLECTED_IN).equals(HEADERS)){
-                    reflectedInHeader += buildIssueForReflection(param, baseRequestResponse);
-                }
-                if(param.get(REFLECTED_IN).equals(BOTH)){
-                    reflectedInAll += buildIssueForReflection(param, baseRequestResponse);
-                }
-                
-                for (int[] match : paramMatches) {
-                    pairs.add(new Pair(match));
-                }
+            if(param.get(REFLECTED_IN).equals(BODY)){
+                reflectedInBody += buildIssueForReflection(param, baseRequestResponse);
+            }
+            if(param.get(REFLECTED_IN).equals(HEADERS)){
+                reflectedInHeader += buildIssueForReflection(param, baseRequestResponse);
+            }
+            if(param.get(REFLECTED_IN).equals(BOTH)){
+                reflectedInAll += buildIssueForReflection(param, baseRequestResponse);
             }
             
-            // Sort and merge matches
-            Collections.sort(pairs, (o1, o2) -> {
-                if (o1.getStart() == o2.getStart()) return 0;
-                return o1.getStart() < o2.getStart() ? -1 : 1;
-            });
-            
-            int[] tmpPair = null;
-            for (Pair pair : pairs) {
-                if (tmpPair == null) {
-                    tmpPair = pair.getPair();
-                } else if (tmpPair[1] > pair.getPair()[0]) {
-                    tmpPair[1] = pair.getPair()[1];
-                } else {
-                    matches.add(tmpPair);
-                    tmpPair = pair.getPair();
-                }
+            for (Object pair : (ArrayList)param.get(MATCHES)) {
+                pairs.add(new Pair((int[]) pair));
             }
-            if (tmpPair != null) {
-                matches.add(tmpPair);
-            }
-            
-            // Create issue with all reflection locations
-            String reflectedSummary = "";
-            if(!reflectedInHeader.equals(""))
-                reflectedSummary += DESCRIPTION_DETAILS + HEADERS + ":<br><ul>" + reflectedInHeader + "</ul>";
-            if(!reflectedInBody.equals(""))
-                reflectedSummary += DESCRIPTION_DETAILS + BODY + ":<br><ul>" + reflectedInBody + "</ul>";
-            if(!reflectedInAll.equals(""))
-                reflectedSummary += DESCRIPTION_DETAILS + BOTH + ":<br><ul>" + reflectedInAll + "</ul>";
-            List<IScanIssue> issues = new ArrayList<>();
-            issues.add(new CustomScanIssue(
-                    baseRequestResponse.getHttpService(),
-                    helpers.analyzeRequest(baseRequestResponse).getUrl(),
-                    new IHttpRequestResponse[]{callbacks.applyMarkers(baseRequestResponse, null, matches)},
-                    issueName,
-                    reflectedSummary,
-                    getSeverity(issueName)));
-            return issues;
         }
+
+        // Build reflection summary
+        String START = ":<br><ul>";
+        String END = "</ul>";
+        String reflectedSummary = "";
+        if(!reflectedInHeader.equals(""))
+            reflectedSummary += DESCRIPTION_DETAILS + HEADERS + START + reflectedInHeader + END;
+        if(!reflectedInBody.equals(""))
+            reflectedSummary += DESCRIPTION_DETAILS + BODY + START + reflectedInBody + END;
+        if(!reflectedInAll.equals(""))
+            reflectedSummary += DESCRIPTION_DETAILS + BOTH + START + reflectedInAll + END;
+
+        // Sort and merge matches
+        Collections.sort(pairs, (o1, o2) -> {
+            if (o1.getStart() == o2.getStart()) return 0;
+            return o1.getStart() < o2.getStart() ? -1 : 1;
+        });
         
-        return null;
-    }
-
-    // Helper method to get context around reflection
-    private String getReflectionContext(String responseBody, int index, String value) {
-        int contextSize = 50; // Characters before and after the reflection
-        int start = Math.max(0, index - contextSize);
-        int end = Math.min(responseBody.length(), index + value.length() + contextSize);
-        String context = responseBody.substring(start, end);
-        return context.replace("<", "&lt;").replace(">", "&gt;");
-    }
-
-    // Helper method to get response header value
-    private String getResponseHeader(IResponseInfo responseInfo, String headerName) {
-        for (String header : responseInfo.getHeaders()) {
-            if (header.toLowerCase().startsWith(headerName.toLowerCase() + ": ")) {
-                return header.substring(header.indexOf(":") + 1).trim();
+        int[] tmpPair = null;
+        for (Pair pair : pairs) {
+            if (tmpPair == null) {
+                tmpPair = pair.getPair();
+            } else if (tmpPair[1] > pair.getPair()[0]) {
+                tmpPair[1] = pair.getPair()[1];
+            } else {
+                matches.add(tmpPair);
+                tmpPair = pair.getPair();
             }
         }
-        return null;
+        if (tmpPair != null) {
+            matches.add(tmpPair);
+        }
+
+        List<IScanIssue> issues = new ArrayList<>();
+        issues.add(new CustomScanIssue(
+                baseRequestResponse.getHttpService(),
+                helpers.analyzeRequest(baseRequestResponse).getUrl(),
+                new IHttpRequestResponse[]{callbacks.applyMarkers(baseRequestResponse, null, matches)},
+                issueName,
+                reflectedSummary,
+                getSeverity(issueName)));
+        return issues;
+    }
+
+    private enum ScanType {
+        REGULAR,    // Normal scan with existing parameters
+        CUSTOM      // Only scan custom headers from our list
+    }
+
+    private void runScan(IContextMenuInvocation invocation, ScanType scanType) {
+        new Thread(() -> {
+            IHttpRequestResponse[] messages = invocation.getSelectedMessages();
+            if (messages != null && messages.length > 0) {
+                for (IHttpRequestResponse message : messages) {
+                    callbacks.printOutput("[+] Starting reflection test for: " + 
+                        helpers.analyzeRequest(message).getUrl().toString());
+                    
+                    // Run scan based on type
+                    List<IScanIssue> issues = doPassiveScan(message, scanType == ScanType.CUSTOM);
+                    
+                    if (issues != null) {
+                        for (IScanIssue issue : issues) {
+                            callbacks.addScanIssue(issue);
+                        }
+                    }
+                }
+            }
+        }, "Reflection-Scanner-Thread").start();
     }
 
     private String getSeverity(String issueName) {
@@ -1033,10 +762,6 @@ public class BurpExtender implements IBurpExtender, IScannerCheck, ITab, IContex
         customItem.addActionListener(e -> runScan(invocation, ScanType.CUSTOM));
         menuItems.add(customItem);
         
-        // Combined scan
-        JMenuItem combinedItem = new JMenuItem("Test this URL for reflections - existing and custom");
-        combinedItem.addActionListener(e -> runScan(invocation, ScanType.COMBINED));
-        menuItems.add(combinedItem);
         return menuItems;
     }
 }
