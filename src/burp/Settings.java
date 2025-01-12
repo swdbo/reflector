@@ -10,6 +10,7 @@ class Settings
     private String scopeOnly;
     private String aggressiveMode;
     private String checkContext;
+    private String useCacheBuster;
     private IBurpExtenderCallbacks callbacks;
     private ArrayList<Object[]> contentTypes;
     private ArrayList<String> enabledCntentTypes;
@@ -31,6 +32,9 @@ class Settings
             aggressiveMode = TRUE_CONST;
         if(checkContext == null)
             checkContext = FALSE_CONST;
+        useCacheBuster = callbacks.loadExtensionSetting(USE_CACHE_BUSTER);
+        if(useCacheBuster == null)
+            useCacheBuster = TRUE_CONST;
 
         this.loadContentTypes();
     }
@@ -68,6 +72,10 @@ class Settings
         return Boolean.valueOf(checkContext);
     }
 
+    public Boolean getUseCacheBuster() {
+        return Boolean.valueOf(useCacheBuster);
+    }
+
     public void setScopeOnly(boolean scopeOnly) {
         this.scopeOnly = String.valueOf(scopeOnly);
         callbacks.saveExtensionSetting(SCOPE_ONLY ,this.scopeOnly);
@@ -81,6 +89,11 @@ class Settings
     public void setCheckContext(boolean checkContext) {
         this.checkContext = String.valueOf(checkContext);
         callbacks.saveExtensionSetting(CHECK_CONTEXT ,this.checkContext);
+    }
+
+    public void setUseCacheBuster(boolean useCacheBuster) {
+        this.useCacheBuster = String.valueOf(useCacheBuster);
+        callbacks.saveExtensionSetting(USE_CACHE_BUSTER, this.useCacheBuster);
     }
 
     public void saveContentTypes() {

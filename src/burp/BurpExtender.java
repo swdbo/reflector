@@ -46,6 +46,7 @@ public class BurpExtender implements IBurpExtender, IScannerCheck, ITab, IContex
     private JCheckBox scopeOnly;
     private JCheckBox aggressiveMode;
     private JCheckBox checkContext;
+    private JCheckBox useCacheBuster;
     private Settings settings;
     private String issueName = XSS_POSSIBLE;
 
@@ -207,6 +208,12 @@ public class BurpExtender implements IBurpExtender, IScannerCheck, ITab, IContex
                 checkContext.setSelected(settings.getCheckContext());
                 option3.setBounds(58, 83, 130, 20);
                 panel.add(option3);
+                BurpExtender.OptionPanel optionPanel4 = placeOption(USE_CACHE_BUSTER);
+                JPanel option4 = optionPanel4.getPanel();
+                useCacheBuster = optionPanel4.getCheckBox();
+                useCacheBuster.setSelected(settings.getUseCacheBuster());
+                option4.setBounds(58, 103, 130, 20);
+                panel.add(option4);
 
 
                 initListener();
@@ -412,6 +419,14 @@ public class BurpExtender implements IBurpExtender, IScannerCheck, ITab, IContex
             @Override
             public void itemStateChanged(ItemEvent e) {
                 settings.setCheckContext(checkContext.isSelected());
+            }
+        });
+
+        //checkbox option
+        useCacheBuster.addItemListener(new ItemListener() {
+            @Override
+            public void itemStateChanged(ItemEvent e) {
+                settings.setUseCacheBuster(useCacheBuster.isSelected());
             }
         });
 

@@ -3,6 +3,7 @@ package burp;
 import java.io.IOException;
 import java.io.PrintWriter;
 import java.net.URL;
+import java.net.MalformedURLException;
 import java.security.KeyManagementException;
 import java.security.KeyStoreException;
 import java.security.NoSuchAlgorithmException;
@@ -12,6 +13,7 @@ import java.util.Arrays;
 import java.util.HashMap;
 import java.util.List;
 import java.util.Map;
+import java.util.UUID;
 import java.util.regex.Matcher;
 import java.util.regex.Pattern;
 
@@ -22,7 +24,7 @@ public class CheckReflection {
     public static final int QUOTE_BYTE = 34;
     private static final String CANARY_PREFIX = "bnr";
     private static final String CANARY_SUFFIX = "rbn";
-    private final int bodyOffset;
+    private int bodyOffset;
 
     private IExtensionHelpers helpers;
     private IHttpRequestResponse iHttpRequestResponse;
@@ -30,6 +32,44 @@ public class CheckReflection {
     IBurpExtenderCallbacks callbacks;
     private byte[] request;
 
+    // Constructor for use by Aggressive class
+    public CheckReflection(Settings settings, IExtensionHelpers helpers, IBurpExtenderCallbacks callbacks) {
+        this.settings = settings;
+        this.helpers = helpers;
+        this.callbacks = callbacks;
+    }
+    
+    public String generateCacheBuster() {
+        if (!settings.getUseCacheBuster()) {
+            return null;
+        }
+        return "cb" + Long.toHexString(Double.doubleToLongBits(Math.random())).substring(0,8);
+    }
+
+    public void addCacheBustingHeaders(List<String> headers) {
+        if (settings.getUseCacheBuster()) {
+            // Keep this we will use it at some point
+            // headers.add("X-oo: oo");
+        }
+    }
+
+    public String addCacheBusterToUrl(String urlStr) {
+        String cacheBuster = generateCacheBuster();
+        if (cacheBuster == null) {
+            return urlStr;
+        }
+        return urlStr + (urlStr.contains("?") ? "&" : "?") + cacheBuster + "=" + System.currentTimeMillis();
+    }
+
+    public String addCacheBusterToBody(String body) {
+        String cacheBuster = generateCacheBuster();
+        if (cacheBuster == null || body == null) {
+            return body;
+        }
+        return body + (body.length() > 0 ? "&" : "") + cacheBuster + "=" + System.currentTimeMillis();
+    }
+
+    // Main constructor
     public CheckReflection(Settings settings, IExtensionHelpers helpers, IHttpRequestResponse iHttpRequestResponse, IBurpExtenderCallbacks callbacks) {
         this.settings = settings;
         this.helpers = helpers;
@@ -47,7 +87,25 @@ public class CheckReflection {
         if (iHttpRequestResponse.getResponse() == null) {
             callbacks.printOutput("[URL] No response available, fetching URL first...");
             IHttpService httpService = iHttpRequestResponse.getHttpService();
-            byte[] request = helpers.buildHttpRequest(helpers.analyzeRequest(iHttpRequestResponse).getUrl());
+            
+            // Get the URL and add cache buster if enabled
+            URL requestUrl = helpers.analyzeRequest(iHttpRequestResponse).getUrl();
+            String urlStr = requestUrl.toString();
+            urlStr = addCacheBusterToUrl(urlStr);
+            
+            // Build request with headers
+            List<String> headers = new ArrayList<>();
+            try {
+                URL parsedUrl = new URL(urlStr);
+                headers.add("GET " + parsedUrl.getPath() + (parsedUrl.getQuery() != null ? "?" + parsedUrl.getQuery() : "") + " HTTP/1.1");
+                headers.add("Host: " + requestUrl.getHost() + (requestUrl.getPort() == -1 ? "" : ":" + requestUrl.getPort()));
+                addCacheBustingHeaders(headers);
+            } catch (MalformedURLException e) {
+                callbacks.printError("Error parsing URL: " + e.getMessage());
+                return new ArrayList<>();
+            }
+            
+            byte[] request = helpers.buildHttpMessage(headers, null);
             IHttpRequestResponse newReqRes = callbacks.makeHttpRequest(httpService, request);
             if (newReqRes != null && newReqRes.getResponse() != null) {
                 iHttpRequestResponse = newReqRes;
@@ -130,9 +188,30 @@ public class CheckReflection {
             // Create a copy of the original request before modifying
             byte[] canaryRequest = this.request.clone();
             
+            // Get request info and prepare headers
+            IRequestInfo requestInfo = helpers.analyzeRequest(canaryRequest);
+            List<String> headers = new ArrayList<>(requestInfo.getHeaders());
+            
+            // Add cache control headers
+            addCacheBustingHeaders(headers);
+            
             // Update the parameter in the copied request
             canaryRequest = helpers.updateParameter(canaryRequest, 
                 helpers.buildParameter(parameter.getName(), canaryValue, parameter.getType()));
+            
+            // Add cache buster to URL or body based on request type
+            if (requestInfo.getMethod().equals("GET")) {
+                String firstLine = headers.get(0);
+                String url = firstLine.substring(4, firstLine.lastIndexOf(" HTTP"));
+                url = addCacheBusterToUrl(url);
+                headers.set(0, "GET " + url + " HTTP/1.1");
+                canaryRequest = helpers.buildHttpMessage(headers, Arrays.copyOfRange(canaryRequest, requestInfo.getBodyOffset(), canaryRequest.length));
+            } else {
+                byte[] body = Arrays.copyOfRange(canaryRequest, requestInfo.getBodyOffset(), canaryRequest.length);
+                String bodyStr = helpers.bytesToString(body);
+                bodyStr = addCacheBusterToBody(bodyStr);
+                canaryRequest = helpers.buildHttpMessage(headers, bodyStr.getBytes());
+            }
             
             IHttpRequestResponse canaryResp = callbacks.makeHttpRequest(
                 iHttpRequestResponse.getHttpService(),
@@ -185,9 +264,30 @@ public class CheckReflection {
                 callbacks.printOutput("[DEBUG] Original request (hex): " + 
                     helpers.bytesToString(Arrays.copyOfRange(canaryRequest, parameter.getValueStart(), parameter.getValueEnd())));
                 
+                // Get request info and prepare headers
+                IRequestInfo requestInfo = helpers.analyzeRequest(canaryRequest);
+                List<String> headers = new ArrayList<>(requestInfo.getHeaders());
+                
+                // Add cache busting headers
+                addCacheBustingHeaders(headers);
+                
                 // Update the parameter in the copied request
                 canaryRequest = helpers.updateParameter(canaryRequest, 
                     helpers.buildParameter(parameter.getName(), canaryValue, parameter.getType()));
+                
+                // Add cache buster to URL or body based on request type
+                if (requestInfo.getMethod().equals("GET")) {
+                    String firstLine = headers.get(0);
+                    String url = firstLine.substring(4, firstLine.lastIndexOf(" HTTP"));
+                    url = addCacheBusterToUrl(url);
+                    headers.set(0, "GET " + url + " HTTP/1.1");
+                    canaryRequest = helpers.buildHttpMessage(headers, Arrays.copyOfRange(canaryRequest, requestInfo.getBodyOffset(), canaryRequest.length));
+                } else {
+                    byte[] body = Arrays.copyOfRange(canaryRequest, requestInfo.getBodyOffset(), canaryRequest.length);
+                    String bodyStr = helpers.bytesToString(body);
+                    bodyStr = addCacheBusterToBody(bodyStr);
+                    canaryRequest = helpers.buildHttpMessage(headers, bodyStr.getBytes());
+                }
                 
                 callbacks.printOutput("[DEBUG] Modified request (hex): " + 
                     helpers.bytesToString(canaryRequest));
@@ -288,6 +388,15 @@ public class CheckReflection {
                         }
                     }
                     
+                    // Add cache busting
+                    addCacheBustingHeaders(modifiedHeaders);
+                    String firstLine = modifiedHeaders.get(0);
+                    if (firstLine.startsWith("GET")) {
+                        String urlPath = firstLine.substring(4, firstLine.lastIndexOf(" HTTP"));
+                        urlPath = addCacheBusterToUrl(urlPath);
+                        modifiedHeaders.set(0, "GET " + urlPath + " HTTP/1.1");
+                    }
+                    
                     byte[] canaryRequest = helpers.buildHttpMessage(modifiedHeaders, Arrays.copyOfRange(
                         iHttpRequestResponse.getRequest(),
                         helpers.analyzeRequest(iHttpRequestResponse.getRequest()).getBodyOffset(),
@@ -342,6 +451,15 @@ public class CheckReflection {
                                 modifiedHeaders.set(j, headerName + ": " + canaryValue);
                                 break;
                             }
+                        }
+                        
+                        // Add cache busting
+                        addCacheBustingHeaders(modifiedHeaders);
+                        String firstLine = modifiedHeaders.get(0);
+                        if (firstLine.startsWith("GET")) {
+                            String urlPath = firstLine.substring(4, firstLine.lastIndexOf(" HTTP"));
+                            urlPath = addCacheBusterToUrl(urlPath);
+                            modifiedHeaders.set(0, "GET " + urlPath + " HTTP/1.1");
                         }
                         
                         byte[] canaryRequest = helpers.buildHttpMessage(modifiedHeaders, Arrays.copyOfRange(
@@ -407,12 +525,32 @@ public class CheckReflection {
                     
                     // Create request with canary value
                     List<String> canaryHeaders = new ArrayList<>(helpers.analyzeRequest(iHttpRequestResponse.getRequest()).getHeaders());
-                    canaryHeaders.add(headerName + ": " + canaryValue);
+                    // Check if header already exists
+                    boolean headerExists = false;
+                    for (int j = 0; j < canaryHeaders.size(); j++) {
+                        if (canaryHeaders.get(j).toLowerCase().startsWith(headerName.toLowerCase() + ":")) {
+                            canaryHeaders.set(j, headerName + ": " + canaryValue);
+                            headerExists = true;
+                            break;
+                        }
+                    }
+                    if (!headerExists) {
+                        canaryHeaders.add(headerName + ": " + canaryValue);
+                    }
                     
                     byte[] canaryBody = Arrays.copyOfRange(
                         iHttpRequestResponse.getRequest(),
                         helpers.analyzeRequest(iHttpRequestResponse.getRequest()).getBodyOffset(),
                         iHttpRequestResponse.getRequest().length);
+                    
+                    // Add cache busting
+                    addCacheBustingHeaders(canaryHeaders);
+                    String firstLine = canaryHeaders.get(0);
+                    if (firstLine.startsWith("GET")) {
+                        String urlPath = firstLine.substring(4, firstLine.lastIndexOf(" HTTP"));
+                        urlPath = addCacheBusterToUrl(urlPath);
+                        canaryHeaders.set(0, "GET " + urlPath + " HTTP/1.1");
+                    }
                     
                     byte[] canaryRequest = helpers.buildHttpMessage(canaryHeaders, canaryBody);
                     
@@ -463,6 +601,15 @@ public class CheckReflection {
                         helpers.analyzeRequest(iHttpRequestResponse.getRequest()).getBodyOffset(),
                         iHttpRequestResponse.getRequest().length);
                     
+                    // Add cache busting
+                    addCacheBustingHeaders(canaryHeaders);
+                    String firstLine = canaryHeaders.get(0);
+                    if (firstLine.startsWith("GET")) {
+                        String urlPath = firstLine.substring(4, firstLine.lastIndexOf(" HTTP"));
+                        urlPath = addCacheBusterToUrl(urlPath);
+                        canaryHeaders.set(0, "GET " + urlPath + " HTTP/1.1");
+                    }
+                    
                     byte[] canaryRequest = helpers.buildHttpMessage(canaryHeaders, canaryBody);
                     
                     // Send canary request and check response
@@ -480,12 +627,32 @@ public class CheckReflection {
                         
                         List<String> requestHeaders = helpers.analyzeRequest(iHttpRequestResponse.getRequest()).getHeaders();
                         List<String> newHeaders = new ArrayList<>(requestHeaders);
-                        newHeaders.add(headerName + ": " + headerValue);
+                        // Check if header already exists
+                        boolean headerExists = false;
+                        for (int k = 0; k < newHeaders.size(); k++) {
+                            if (newHeaders.get(k).toLowerCase().startsWith(headerName.toLowerCase() + ":")) {
+                                newHeaders.set(k, headerName + ": " + headerValue);
+                                headerExists = true;
+                                break;
+                            }
+                        }
+                        if (!headerExists) {
+                            newHeaders.add(headerName + ": " + headerValue);
+                        }
                         
                         byte[] body = Arrays.copyOfRange(
                             iHttpRequestResponse.getRequest(),
                             helpers.analyzeRequest(iHttpRequestResponse.getRequest()).getBodyOffset(),
                             iHttpRequestResponse.getRequest().length);
+                        
+                        // Add cache busting
+                        addCacheBustingHeaders(newHeaders);
+                        firstLine = newHeaders.get(0);
+                        if (firstLine.startsWith("GET")) {
+                            String urlPath = firstLine.substring(4, firstLine.lastIndexOf(" HTTP"));
+                            urlPath = addCacheBusterToUrl(urlPath);
+                            newHeaders.set(0, "GET " + urlPath + " HTTP/1.1");
+                        }
                         
                         byte[] newRequest = helpers.buildHttpMessage(newHeaders, body);
                         
@@ -615,7 +782,15 @@ public class CheckReflection {
             "Transfer-Encoding",
             // Server info headers
             "Server",
-            "Server-Timing"
+            "Server-Timing",
+            // Security headers
+            "Upgrade-Insecure-Requests",
+            "Sec-Fetch-Dest",
+            "Sec-Fetch-Mode", 
+            "Sec-Fetch-Site",
+            "Sec-Fetch-User",
+            "Pragma",
+            "Priority"
         };
         
         return Arrays.asList(skipHeaders).contains(headerName);
@@ -627,13 +802,17 @@ public class CheckReflection {
                 return BODY;
             }
         }
-        return "";
+        return HEADERS; // If no matches in body, must be in headers
     }
 
     private List<int[]> getMatches(byte[] response, byte[] match) {
         List<int[]> matches = new ArrayList<int[]>();
-
-        int start = 0;
+        
+        // Get body offset to only search in body
+        int bodyOffset = helpers.analyzeResponse(response).getBodyOffset();
+        
+        // Only search in response body
+        int start = bodyOffset;
         while (start < response.length)
         {
             start = helpers.indexOf(response, match, true, start, response.length);
@@ -666,6 +845,8 @@ class Aggressive
     private static final String PAYLOAD_JSON = "<\\\"'`";
     private Pattern pattern;
     private Settings settings;
+    private CheckReflection checkReflection;
+
     Aggressive(Settings settings, IExtensionHelpers helpers, IHttpRequestResponse baseRequestResponse, IBurpExtenderCallbacks callbacks, List<Map> reflectedParameters) {
         this.helpers = helpers;
         this.callbacks = callbacks;
@@ -678,6 +859,7 @@ class Aggressive
         // // OLD ONE KEEP FOR NOW
         // this.pattern = Pattern.compile(PAYLOAD_GREP + "([_%&;<\"'`#\\\\0-9a-z]{1,15}?)" + PAYLOAD_GREP);
         this.settings = settings;
+        this.checkReflection = new CheckReflection(settings, helpers, callbacks);
     }
 
     public List<Map> scanReflectedParameters(){
@@ -1043,6 +1225,20 @@ class Aggressive
             callbacks.printOutput("[DEBUG-REQUEST] Sending headers:");
             for (String h : modifiedHeaders) {
                 callbacks.printOutput("[DEBUG-REQUEST] " + h);
+            }
+            
+            // Add cache busting headers and parameters
+            checkReflection.addCacheBustingHeaders(modifiedHeaders);
+            
+            String firstLine = modifiedHeaders.get(0);
+            if (firstLine.startsWith("GET")) {
+                String url = firstLine.substring(4, firstLine.lastIndexOf(" HTTP"));
+                url = checkReflection.addCacheBusterToUrl(url);
+                modifiedHeaders.set(0, "GET " + url + " HTTP/1.1");
+            } else if (body.length > 0) {
+                String bodyStr = helpers.bytesToString(body);
+                bodyStr = checkReflection.addCacheBusterToBody(bodyStr);
+                body = bodyStr.getBytes();
             }
             
             // Build new request with modified headers

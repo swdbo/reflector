@@ -13,6 +13,7 @@ public class Constants {
     public static final String SCOPE_ONLY = "Scope only";
     public static final String CHECK_CONTEXT = "Check context";
     public static final String AGGRESSIVE_MODE = "Aggressive mode";
+    public static final String USE_CACHE_BUSTER = "Use cache buster";
     public static final String HEADERS = "HEADERS";
     public static final String BODY = "BODY";
     public static final String BOTH = "ALL";
